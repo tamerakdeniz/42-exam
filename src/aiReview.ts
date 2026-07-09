@@ -7,6 +7,10 @@ import type { RunResult } from "./wasmRunner";
 // liste anahtar yokken veya istek basarisiz olursa yedek (fallback) olarak kullanilir.
 export const fallbackModels: Record<Provider, string[]> = {
   gemini: [
+    "gemini-3-5-flash",
+    "gemini-3-5-flash-lite",
+    "gemini-3-1-flash",
+    "gemini-3-1-flash-lite",
     "gemini-2.5-flash",
     "gemini-2.5-flash-lite",
     "gemini-2.5-pro",
