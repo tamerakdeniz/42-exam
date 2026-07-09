@@ -35,12 +35,36 @@ h1, h2, p { margin-top: 0; }
 .studio-shell {
   min-height: 100vh;
   display: grid;
-  grid-template-columns: 330px minmax(0, 1fr);
+  grid-template-columns: var(--sidebar-width, 330px) minmax(0, 1fr);
+  transition: grid-template-columns .18s ease;
   background:
     linear-gradient(90deg, rgba(0, 186, 188, .06) 1px, transparent 1px),
     linear-gradient(180deg, rgba(0, 186, 188, .045) 1px, transparent 1px),
     var(--bg);
   background-size: 36px 36px;
+}
+
+.studio-shell--collapsed .left-panel {
+  padding: 0;
+  border-right: 0;
+}
+
+.studio-shell--collapsed .topbar {
+  padding-left: 46px;
+}
+
+.sidebar-expand {
+  position: fixed;
+  top: 16px;
+  left: 16px;
+  z-index: 30;
+  width: 40px;
+  min-height: 40px;
+  padding: 0;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--green);
+  box-shadow: var(--shadow);
 }
 
 .left-panel {
@@ -63,6 +87,32 @@ h1, h2, p { margin-top: 0; }
   gap: 12px;
   padding-bottom: 14px;
   border-bottom: 1px solid var(--line);
+}
+
+.brand-block > div:nth-of-type(1) {
+  min-width: 0;
+}
+
+.brand-block strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-collapse {
+  flex-shrink: 0;
+  margin-left: auto;
+  width: 32px;
+  min-height: 32px;
+  padding: 0;
+  border: 1px solid var(--line);
+  background: #0a1512;
+  color: var(--muted);
+}
+
+.sidebar-collapse:hover {
+  border-color: var(--green);
+  color: var(--green);
 }
 
 .brand-mark {
@@ -103,9 +153,30 @@ h1, h2, p { margin-top: 0; }
 }
 
 .mode-switcher {
+  gap: 6px;
   padding: 5px;
   border: 1px solid var(--line);
   background: var(--panel);
+}
+
+.panel-resizer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  background: transparent;
+  transition: background .15s ease;
+}
+
+.panel-resizer:hover,
+.panel-resizer:active {
+  background: rgba(0, 186, 188, .45);
+}
+
+.studio-shell--collapsed .panel-resizer {
+  display: none;
 }
 
 .mode-button,
@@ -124,8 +195,18 @@ button,
 
 .mode-button {
   flex: 1;
-  padding: 0 10px;
+  min-width: 0;
+  padding: 0 6px;
+  gap: 5px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 13px;
   color: var(--muted);
+}
+
+.mode-button svg {
+  flex-shrink: 0;
 }
 
 .mode-button--active {

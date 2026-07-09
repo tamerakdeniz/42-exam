@@ -1,15 +1,17 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import {
   BookOpen,
   Brain,
   CheckCircle2,
   ChevronRight,
+  ChevronsLeft,
   Clock3,
   Code2,
   FileText,
   FlaskConical,
   History,
   KeyRound,
+  PanelLeft,
   Play,
   RotateCcw,
   Shuffle,
@@ -196,6 +198,11 @@ export default function App() {
   const [selectedReviewId, setSelectedReviewId] = useState<string | null>(null);
   const [availableModels, setAvailableModels] = useState<Record<Provider, string[]>>(fallbackModels);
   const [tick, setTick] = useState(0);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("sidebar-collapsed") === "1");
+  const [sidebarWidth, setSidebarWidth] = useState(() => {
+    const stored = Number(localStorage.getItem("sidebar-width"));
+    return stored >= 240 && stored <= 520 ? stored : 330;
+  });
 
   const activeExercise = exerciseById.get(state.activeExerciseId) ?? exercises[0];
   const code = state.codeByExercise[activeExercise.id] ?? getStarterCode(activeExercise);
@@ -211,6 +218,32 @@ export default function App() {
     const timer = window.setInterval(() => setTick((value) => value + 1), 1000);
     return () => window.clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    localStorage.setItem("sidebar-collapsed", sidebarCollapsed ? "1" : "0");
+  }, [sidebarCollapsed]);
+
+  useEffect(() => {
+    localStorage.setItem("sidebar-width", String(sidebarWidth));
+  }, [sidebarWidth]);
+
+  const startSidebarResize = (event: ReactMouseEvent) => {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = sidebarWidth;
+    const onMove = (moveEvent: MouseEvent) => {
+      const next = startWidth + moveEvent.clientX - startX;
+      setSidebarWidth(Math.min(520, Math.max(240, next)));
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      document.body.style.userSelect = "";
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    document.body.style.userSelect = "none";
+  };
 
   const provider = state.provider;
   const providerKey = state.apiKeys[provider];
@@ -420,7 +453,15 @@ export default function App() {
   const remaining = tick >= 0 ? formatRemaining(exam) : "--:--";
 
   return (
-    <div className="studio-shell">
+    <div
+      className={sidebarCollapsed ? "studio-shell studio-shell--collapsed" : "studio-shell"}
+      style={{ ["--sidebar-width" as string]: sidebarCollapsed ? "0px" : `${sidebarWidth}px` }}
+    >
+      {sidebarCollapsed && (
+        <button className="sidebar-expand" onClick={() => setSidebarCollapsed(false)} title="Paneli genişlet" aria-label="Paneli genişlet">
+          <PanelLeft size={18} />
+        </button>
+      )}
       <aside className="left-panel">
         <div className="brand-block">
           <div className="brand-mark">42</div>
@@ -428,6 +469,9 @@ export default function App() {
             <span>Exam Forge</span>
             <strong>C Piscine Studio</strong>
           </div>
+          <button className="sidebar-collapse" onClick={() => setSidebarCollapsed(true)} title="Paneli daralt" aria-label="Paneli daralt">
+            <ChevronsLeft size={18} />
+          </button>
         </div>
 
         <div className="mode-switcher">
@@ -463,6 +507,7 @@ export default function App() {
             />
           ))}
         </div>
+        <div className="panel-resizer" onMouseDown={startSidebarResize} role="separator" aria-orientation="vertical" title="Sürükleyerek genişlik ayarla" />
       </aside>
 
       <main className="workspace">
