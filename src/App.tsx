@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   BookOpen,
   Brain,
@@ -8,28 +8,33 @@ import {
   Code2,
   FileText,
   FlaskConical,
+  History,
   KeyRound,
   Play,
+  RefreshCw,
   RotateCcw,
   Shuffle,
   Terminal,
   Timer,
+  Trash2,
   XCircle,
 } from "lucide-react";
-import { requestAiReview } from "./aiReview";
+import { fallbackModels, fetchModels, requestAiReview } from "./aiReview";
+import { CodeEditor } from "./CodeEditor";
 import { exercises, levelLabels, sourceReferences, type Exercise } from "./exerciseCatalog";
 import { getStarterCode, getTestPlan } from "./testPlans";
 import {
   loadState,
   saveState,
   updateProgress,
+  type AiReviewEntry,
   type AppState,
   type ExamSession,
   type ProgressStatus,
   type Provider,
   type StudyMode,
 } from "./storage";
-import { runExercise, type RunResult } from "./wasmRunner";
+import { runExercise, type RunResult, type TerminalLine } from "./wasmRunner";
 
 const exerciseById = new Map(exercises.map((exercise) => [exercise.id, exercise]));
 const modeLabels: Record<StudyMode, string> = {
@@ -125,16 +130,16 @@ function ExerciseRow({
   );
 }
 
-function TerminalView({ result, running }: { result?: RunResult; running: boolean }) {
-  if (running) {
-    return (
-      <div className="terminal-view">
-        <p className="terminal-line terminal-line--system">Derleme ve test calisiyor...</p>
-      </div>
-    );
-  }
+function TerminalView({ result, running, live }: { result?: RunResult; running: boolean; live: TerminalLine[] }) {
+  const viewRef = useRef<HTMLDivElement>(null);
+  const lines = running && live.length ? live : result?.terminal ?? [];
 
-  if (!result) {
+  useEffect(() => {
+    const node = viewRef.current;
+    if (node) node.scrollTop = node.scrollHeight;
+  }, [lines.length, running]);
+
+  if (!running && !result) {
     return (
       <div className="terminal-view terminal-view--empty">
         <Terminal size={18} />
@@ -144,10 +149,11 @@ function TerminalView({ result, running }: { result?: RunResult; running: boolea
   }
 
   return (
-    <div className="terminal-view">
-      {result.terminal.map((entry, index) => (
+    <div className="terminal-view" ref={viewRef}>
+      {lines.map((entry, index) => (
         <pre className={`terminal-line terminal-line--${entry.stream}`} key={`${entry.stream}-${index}`}>{entry.text}</pre>
       ))}
+      {running && <p className="terminal-line terminal-line--system">Derleme ve test calisiyor...</p>}
     </div>
   );
 }
@@ -183,9 +189,13 @@ export default function App() {
   const [query, setQuery] = useState("");
   const [levelFilter, setLevelFilter] = useState<number | "all">("all");
   const [runResult, setRunResult] = useState<RunResult>();
+  const [liveTerminal, setLiveTerminal] = useState<TerminalLine[]>([]);
   const [running, setRunning] = useState(false);
   const [reviewing, setReviewing] = useState(false);
-  const [aiReview, setAiReview] = useState("");
+  const [aiError, setAiError] = useState("");
+  const [selectedReviewId, setSelectedReviewId] = useState<string | null>(null);
+  const [availableModels, setAvailableModels] = useState<Record<Provider, string[]>>(fallbackModels);
+  const [modelsLoading, setModelsLoading] = useState(false);
   const [tick, setTick] = useState(0);
 
   const activeExercise = exerciseById.get(state.activeExerciseId) ?? exercises[0];
@@ -193,6 +203,8 @@ export default function App() {
   const notes = state.notesByExercise[activeExercise.id] ?? "";
   const activeProgress = state.progressByExercise[activeExercise.id];
   const testPlan = getTestPlan(activeExercise);
+  const aiHistory = state.aiHistoryByExercise[activeExercise.id] ?? [];
+  const selectedReview = aiHistory.find((entry) => entry.id === selectedReviewId) ?? aiHistory[0];
 
   useEffect(() => saveState(state), [state]);
 
@@ -200,6 +212,34 @@ export default function App() {
     const timer = window.setInterval(() => setTick((value) => value + 1), 1000);
     return () => window.clearInterval(timer);
   }, []);
+
+  const provider = state.provider;
+  const providerKey = state.apiKeys[provider];
+
+  const refreshModels = () => {
+    setModelsLoading(true);
+    fetchModels(provider, state.apiKeys[provider])
+      .then((list) => setAvailableModels((current) => ({ ...current, [provider]: list })))
+      .finally(() => setModelsLoading(false));
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    setModelsLoading(true);
+    const handle = window.setTimeout(() => {
+      fetchModels(provider, providerKey)
+        .then((list) => {
+          if (!cancelled) setAvailableModels((current) => ({ ...current, [provider]: list }));
+        })
+        .finally(() => {
+          if (!cancelled) setModelsLoading(false);
+        });
+    }, 500);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(handle);
+    };
+  }, [provider, providerKey]);
 
   const filteredExercises = useMemo(() => {
     const normalized = query.trim().toLowerCase();
@@ -227,7 +267,9 @@ export default function App() {
   const selectExercise = (exercise: Exercise) => {
     updateState((current) => ({ ...current, activeExerciseId: exercise.id }));
     setRunResult(undefined);
-    setAiReview("");
+    setLiveTerminal([]);
+    setAiError("");
+    setSelectedReviewId(null);
   };
 
   const setCode = (nextCode: string) => {
@@ -276,7 +318,9 @@ export default function App() {
       activeExerciseId: session.exerciseIds[0] ?? current.activeExerciseId,
     }));
     setRunResult(undefined);
-    setAiReview("");
+    setLiveTerminal([]);
+    setAiError("");
+    setSelectedReviewId(null);
   };
 
   const advanceExam = () => {
@@ -293,14 +337,18 @@ export default function App() {
       },
     }));
     setRunResult(undefined);
-    setAiReview("");
+    setLiveTerminal([]);
+    setAiError("");
+    setSelectedReviewId(null);
   };
 
   const runTests = async () => {
     setRunning(true);
-    setAiReview("");
+    setLiveTerminal([]);
     try {
-      const result = await runExercise(activeExercise, code);
+      const result = await runExercise(activeExercise, code, (entry) =>
+        setLiveTerminal((current) => [...current, entry]),
+      );
       setRunResult(result);
       const totalTests = result.outcomes.length || 1;
       const passedTests = result.outcomes.length ? result.outcomes.filter((outcome) => outcome.passed).length : Number(result.ok);
@@ -328,7 +376,7 @@ export default function App() {
 
   const askAi = async () => {
     setReviewing(true);
-    setAiReview("");
+    setAiError("");
     try {
       const review = await requestAiReview({
         provider: state.provider,
@@ -339,18 +387,45 @@ export default function App() {
         runResult,
         notes,
       });
-      setAiReview(review);
+      const entry: AiReviewEntry = {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        createdAt: new Date().toISOString(),
+        provider: state.provider,
+        model: state.models[state.provider],
+        review,
+        status: activeProgress?.status,
+      };
+      updateState((current) => ({
+        ...current,
+        aiHistoryByExercise: {
+          ...current.aiHistoryByExercise,
+          [activeExercise.id]: [entry, ...(current.aiHistoryByExercise[activeExercise.id] ?? [])],
+        },
+      }));
+      setSelectedReviewId(entry.id);
     } catch (error) {
-      setAiReview(error instanceof Error ? error.message : String(error));
+      setAiError(error instanceof Error ? error.message : String(error));
     } finally {
       setReviewing(false);
     }
   };
 
+  const deleteReview = (id: string) => {
+    updateState((current) => ({
+      ...current,
+      aiHistoryByExercise: {
+        ...current.aiHistoryByExercise,
+        [activeExercise.id]: (current.aiHistoryByExercise[activeExercise.id] ?? []).filter((entry) => entry.id !== id),
+      },
+    }));
+    setSelectedReviewId((current) => (current === id ? null : current));
+  };
+
   const resetExercise = () => {
     setCode(getStarterCode(activeExercise));
     setRunResult(undefined);
-    setAiReview("");
+    setLiveTerminal([]);
+    setAiError("");
   };
 
   const mode = state.mode;
@@ -449,7 +524,7 @@ export default function App() {
                 <button className="primary" onClick={runTests} disabled={running}><Play size={15} /> Derle & test et</button>
               </div>
             </div>
-            <textarea className="code-editor" spellCheck={false} value={code} onChange={(event) => setCode(event.target.value)} />
+            <CodeEditor className="code-editor" value={code} onChange={setCode} />
           </div>
 
           <div className="result-panel">
@@ -460,7 +535,7 @@ export default function App() {
               </div>
               <span className={`result-pill result-pill--${runResult?.ok ? "ok" : activeProgress?.status ?? "new"}`}>{statusLabel(activeProgress?.status)}</span>
             </div>
-            <TerminalView result={runResult} running={running} />
+            <TerminalView result={runResult} running={running} live={liveTerminal} />
             <OutcomeList result={runResult} />
           </div>
         </section>
@@ -483,8 +558,23 @@ export default function App() {
                 </select>
               </label>
               <label>
-                Model
-                <input value={state.models[state.provider]} onChange={(event) => setModel(state.provider, event.target.value)} />
+                <span className="label-row">
+                  Model
+                  <button
+                    type="button"
+                    className="icon-button"
+                    onClick={refreshModels}
+                    disabled={modelsLoading}
+                    title="Model listesini yenile"
+                  >
+                    <RefreshCw size={12} className={modelsLoading ? "spin" : undefined} />
+                  </button>
+                </span>
+                <select value={state.models[state.provider]} onChange={(event) => setModel(state.provider, event.target.value)}>
+                  {Array.from(new Set([state.models[state.provider], ...(availableModels[state.provider] ?? [])])).map((model) => (
+                    <option value={model} key={model}>{model}</option>
+                  ))}
+                </select>
               </label>
               <label className="span-2">
                 <KeyRound size={14} /> API key
@@ -498,23 +588,65 @@ export default function App() {
             </div>
             <p className="hint">Anahtar localStorage içinde bu cihazda saklanır ve istek doğrudan sağlayıcı API’sine gider.</p>
             <textarea className="notes-box" value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="Takıldığın noktayı veya kendi varsayımını yaz..." />
+            {selectedReview && !reviewing && !aiError && (
+              <div className="review-meta">
+                <span>{new Date(selectedReview.createdAt).toLocaleString("tr-TR")}</span>
+                <span>{selectedReview.provider} · {selectedReview.model}</span>
+              </div>
+            )}
             <div className="review-output">
-              {reviewing ? "AI analiz ediyor..." : aiReview || "Derleme/testten sonra analiz alırsan neden KO aldığını ve nasıl düzelteceğini burada göreceksin."}
+              {reviewing
+                ? "AI analiz ediyor..."
+                : aiError
+                  ? aiError
+                  : selectedReview?.review || "Derleme/testten sonra analiz alırsan neden KO aldığını ve nasıl düzelteceğini burada göreceksin."}
             </div>
           </div>
 
-          <div className="sources-panel">
-            <div className="panel-header">
-              <div>
-                <span className="eyebrow">Kaynak havuzu</span>
-                <h2>69 sınav egzersizi</h2>
+          <div className="coach-side">
+            <div className="history-panel">
+              <div className="panel-header">
+                <div>
+                  <span className="eyebrow"><History size={12} /> Hata analizi geçmişi</span>
+                  <h2>{aiHistory.length} kayıt</h2>
+                </div>
               </div>
+              {aiHistory.length === 0 ? (
+                <p className="history-empty">Bu egzersiz için henüz analiz yok. "Analiz et" ile ilk kaydı oluştur.</p>
+              ) : (
+                <div className="history-list">
+                  {aiHistory.map((entry) => (
+                    <div
+                      className={entry.id === selectedReview?.id ? "history-item history-item--active" : "history-item"}
+                      key={entry.id}
+                    >
+                      <button className="history-item__main" onClick={() => setSelectedReviewId(entry.id)}>
+                        <span className="history-item__time">{new Date(entry.createdAt).toLocaleString("tr-TR")}</span>
+                        <span className="history-item__meta">{entry.provider} · {entry.model}</span>
+                        <span className="history-item__preview">{entry.review.slice(0, 90)}</span>
+                      </button>
+                      <button className="icon-button" onClick={() => deleteReview(entry.id)} title="Kaydı sil">
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
-            <p>Çözümler kesin doğru kabul edilmez; subject ve test sonucu önceliklidir. İlerleme, kod ve notlar sadece bu tarayıcıda kalır.</p>
-            <div className="source-links">
-              {sourceReferences.map((source) => (
-                <a href={source.url} target="_blank" rel="noreferrer" key={source.url}>{source.label}<ChevronRight size={14} /></a>
-              ))}
+
+            <div className="sources-panel">
+              <div className="panel-header">
+                <div>
+                  <span className="eyebrow">Kaynak havuzu</span>
+                  <h2>69 sınav egzersizi</h2>
+                </div>
+              </div>
+              <p>Çözümler kesin doğru kabul edilmez; subject ve test sonucu önceliklidir. İlerleme, kod ve notlar sadece bu tarayıcıda kalır.</p>
+              <div className="source-links">
+                {sourceReferences.map((source) => (
+                  <a href={source.url} target="_blank" rel="noreferrer" key={source.url}>{source.label}<ChevronRight size={14} /></a>
+                ))}
+              </div>
             </div>
           </div>
         </section>

@@ -20,6 +20,15 @@ export type ExamSession = {
   completedIds: string[];
 };
 
+export type AiReviewEntry = {
+  id: string;
+  createdAt: string;
+  provider: Provider;
+  model: string;
+  review: string;
+  status?: ProgressStatus;
+};
+
 export type AppState = {
   activeExerciseId: string;
   mode: StudyMode;
@@ -29,6 +38,7 @@ export type AppState = {
   codeByExercise: Record<string, string>;
   notesByExercise: Record<string, string>;
   progressByExercise: Record<string, ExerciseProgress>;
+  aiHistoryByExercise: Record<string, AiReviewEntry[]>;
   examSession?: ExamSession;
 };
 
@@ -43,12 +53,13 @@ export const defaultState = (firstExercise: Exercise): AppState => ({
     claude: "",
   },
   models: {
-    gemini: "gemini-3.5-flash",
-    claude: "claude-sonnet-4-6",
+    gemini: "gemini-2.5-flash",
+    claude: "claude-3-5-haiku-latest",
   },
   codeByExercise: {},
   notesByExercise: {},
   progressByExercise: {},
+  aiHistoryByExercise: {},
 });
 
 export function loadState(firstExercise: Exercise): AppState {
@@ -64,6 +75,7 @@ export function loadState(firstExercise: Exercise): AppState {
       codeByExercise: parsed.codeByExercise ?? {},
       notesByExercise: parsed.notesByExercise ?? {},
       progressByExercise: parsed.progressByExercise ?? {},
+      aiHistoryByExercise: parsed.aiHistoryByExercise ?? {},
     };
   } catch {
     return defaultState(firstExercise);

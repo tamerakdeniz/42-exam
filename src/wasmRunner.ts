@@ -1,7 +1,7 @@
 import type { Exercise } from "./exerciseCatalog";
 import { getTestPlan, type ProgramCase } from "./testPlans";
 
-type TerminalLine = {
+export type TerminalLine = {
   stream: "system" | "stdout" | "stderr" | "ok" | "error";
   text: string;
 };
@@ -111,16 +111,23 @@ async function execute(
   return waitWithTimeout(instance.wait(), 20_000, testCase.name);
 }
 
-function recordOutput(terminal: TerminalLine[], prefix: string, stdout: string, stderr: string) {
-  if (stdout) terminal.push(line("stdout", `${prefix} stdout:\n${stdout}`));
-  if (stderr) terminal.push(line("stderr", `${prefix} stderr:\n${stderr}`));
+function recordOutput(emit: (entry: TerminalLine) => void, prefix: string, stdout: string, stderr: string) {
+  if (stdout) emit(line("stdout", `${prefix} stdout:\n${stdout}`));
+  if (stderr) emit(line("stderr", `${prefix} stderr:\n${stderr}`));
 }
 
-export async function runExercise(exercise: Exercise, code: string): Promise<RunResult> {
+export async function runExercise(
+  exercise: Exercise,
+  code: string,
+  onLine?: (entry: TerminalLine) => void,
+): Promise<RunResult> {
   const terminal: TerminalLine[] = [];
-  const onLine = (entry: TerminalLine) => terminal.push(entry);
-  const sdk = await getSdk(onLine);
-  const clang = await getClang(sdk, onLine);
+  const emit = (entry: TerminalLine) => {
+    terminal.push(entry);
+    onLine?.(entry);
+  };
+  const sdk = await getSdk(emit);
+  const clang = await getClang(sdk, emit);
   const project = new sdk.Directory();
   const plan = getTestPlan(exercise);
 
@@ -132,12 +139,12 @@ export async function runExercise(exercise: Exercise, code: string): Promise<Run
   const inputFile = plan.mode === "function" ? "test_runner.c" : "student.c";
   if (plan.harness) await project.writeFile("test_runner.c", plan.harness);
 
-  terminal.push(line("system", `cc -Wall -Wextra -Werror ${inputFile} -o exercise.wasm`));
+  emit(line("system", `cc -Wall -Wextra -Werror ${inputFile} -o exercise.wasm`));
   const compileOutput = await compile(sdk, clang, project, inputFile, "exercise.wasm");
-  recordOutput(terminal, "compile", compileOutput.stdout, compileOutput.stderr);
+  recordOutput(emit, "compile", compileOutput.stdout, compileOutput.stderr);
 
   if (!compileOutput.ok) {
-    terminal.push(line("error", `Derleme basarisiz. Exit code: ${compileOutput.code}`));
+    emit(line("error", `Derleme basarisiz. Exit code: ${compileOutput.code}`));
     return {
       ok: false,
       compileStdout: compileOutput.stdout,
@@ -148,7 +155,7 @@ export async function runExercise(exercise: Exercise, code: string): Promise<Run
     };
   }
 
-  terminal.push(line("ok", "Derleme basarili."));
+  emit(line("ok", "Derleme basarili."));
   if (plan.mode === "compile-only") {
     return {
       ok: true,
@@ -166,10 +173,10 @@ export async function runExercise(exercise: Exercise, code: string): Promise<Run
 
   const outcomes: TestOutcome[] = [];
   for (const testCase of cases) {
-    terminal.push(line("system", `./exercise ${testCase.args?.map((arg) => JSON.stringify(arg)).join(" ") ?? ""}`.trim()));
+    emit(line("system", `./exercise ${testCase.args?.map((arg) => JSON.stringify(arg)).join(" ") ?? ""}`.trim()));
     try {
       const output = await execute(sdk, project, "exercise.wasm", testCase);
-      recordOutput(terminal, testCase.name, output.stdout, output.stderr);
+      recordOutput(emit, testCase.name, output.stdout, output.stderr);
       const passed = output.ok && output.stdout === testCase.expectedStdout;
       outcomes.push({
         name: testCase.name,
@@ -179,7 +186,7 @@ export async function runExercise(exercise: Exercise, code: string): Promise<Run
         stderr: output.stderr,
         exitCode: output.code,
       });
-      terminal.push(line(passed ? "ok" : "error", passed ? `${testCase.name}: OK` : `${testCase.name}: KO`));
+      emit(line(passed ? "ok" : "error", passed ? `${testCase.name}: OK` : `${testCase.name}: KO`));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       outcomes.push({
@@ -190,7 +197,7 @@ export async function runExercise(exercise: Exercise, code: string): Promise<Run
         stderr: message,
         exitCode: -1,
       });
-      terminal.push(line("error", `${testCase.name}: ${message}`));
+      emit(line("error", `${testCase.name}: ${message}`));
     }
   }
 

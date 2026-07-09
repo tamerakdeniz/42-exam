@@ -571,6 +571,15 @@ button.primary {
   resize: vertical;
 }
 
+.review-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 16px 0;
+  color: var(--muted);
+  font: 700 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
 .review-output {
   min-height: 180px;
   padding: 16px;
@@ -579,6 +588,122 @@ button.primary {
   border-top: 1px solid var(--line);
   font-size: 14px;
   line-height: 1.6;
+}
+
+.label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.icon-button {
+  min-height: 26px;
+  width: 26px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line);
+  background: #0a1512;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.icon-button:hover:not(:disabled) {
+  border-color: var(--green);
+  color: var(--green);
+}
+
+.spin {
+  animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.coach-side {
+  display: grid;
+  gap: 18px;
+  align-content: start;
+}
+
+.history-panel {
+  border: 1px solid var(--line);
+  background: rgba(12, 23, 20, .92);
+  box-shadow: var(--shadow);
+}
+
+.history-panel .eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.history-empty {
+  margin: 0;
+  padding: 14px 16px 18px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.history-list {
+  display: grid;
+  gap: 6px;
+  max-height: 320px;
+  overflow: auto;
+  padding: 12px;
+}
+
+.history-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch;
+  gap: 6px;
+  border: 1px solid var(--line);
+  background: #08120f;
+}
+
+.history-item--active {
+  border-color: var(--green);
+  background: rgba(0, 186, 188, .12);
+}
+
+.history-item__main {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+  justify-items: start;
+  text-align: left;
+  padding: 9px 10px;
+  border: 0;
+  background: transparent;
+}
+
+.history-item__time {
+  color: var(--text);
+  font: 700 11px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.history-item__meta {
+  color: var(--green);
+  font: 700 10px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.history-item__preview {
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.history-item .icon-button {
+  align-self: center;
+  margin-right: 8px;
 }
 
 .sources-panel {

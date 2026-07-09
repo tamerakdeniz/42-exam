@@ -2,6 +2,81 @@ import type { Exercise } from "./exerciseCatalog";
 import type { Provider } from "./storage";
 import type { RunResult } from "./wasmRunner";
 
+// Aktif olarak kullanilabilen, maliyeti dusuk / yaygin kullanilan modeller.
+// API anahtari verildiginde saglayici uzerinden guncel liste cekilir; asagidaki
+// liste anahtar yokken veya istek basarisiz olursa yedek (fallback) olarak kullanilir.
+export const fallbackModels: Record<Provider, string[]> = {
+  gemini: [
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+    "gemini-2.5-pro",
+    "gemini-2.0-flash",
+    "gemini-2.0-flash-lite",
+    "gemini-1.5-flash",
+    "gemini-1.5-flash-8b",
+    "gemini-1.5-pro",
+  ],
+  claude: [
+    "claude-3-5-haiku-latest",
+    "claude-3-5-sonnet-latest",
+    "claude-3-7-sonnet-latest",
+    "claude-sonnet-4-5",
+    "claude-opus-4-1",
+    "claude-3-haiku-20240307",
+  ],
+};
+
+function sortModels(models: string[]): string[] {
+  return Array.from(new Set(models)).sort((a, b) => a.localeCompare(b));
+}
+
+async function fetchGeminiModels(apiKey: string): Promise<string[]> {
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}&pageSize=200`,
+  );
+  const data = (await response.json()) as {
+    models?: Array<{ name?: string; supportedGenerationMethods?: string[] }>;
+    error?: { message?: string };
+  };
+  if (!response.ok) throw new Error(data.error?.message ?? "Gemini model listesi alinamadi.");
+  const models = (data.models ?? [])
+    .filter((model) => model.supportedGenerationMethods?.includes("generateContent"))
+    .map((model) => (model.name ?? "").replace(/^models\//, ""))
+    .filter(Boolean);
+  return sortModels(models);
+}
+
+async function fetchClaudeModels(apiKey: string): Promise<string[]> {
+  const response = await fetch("https://api.anthropic.com/v1/models?limit=200", {
+    headers: {
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+      "anthropic-dangerous-direct-browser-access": "true",
+    },
+  });
+  const data = (await response.json()) as {
+    data?: Array<{ id?: string }>;
+    error?: { message?: string };
+  };
+  if (!response.ok) throw new Error(data.error?.message ?? "Claude model listesi alinamadi.");
+  const models = (data.data ?? []).map((model) => model.id ?? "").filter(Boolean);
+  return sortModels(models);
+}
+
+/**
+ * Saglayicidan guncel model listesini ceker. API anahtari yoksa veya istek
+ * basarisiz olursa fallbackModels dondurur (bu yuzden hic hata firlatmaz).
+ */
+export async function fetchModels(provider: Provider, apiKey: string): Promise<string[]> {
+  if (!apiKey.trim()) return fallbackModels[provider];
+  try {
+    const remote = provider === "gemini" ? await fetchGeminiModels(apiKey) : await fetchClaudeModels(apiKey);
+    return remote.length ? sortModels([...remote, ...fallbackModels[provider]]) : fallbackModels[provider];
+  } catch {
+    return fallbackModels[provider];
+  }
+}
+
 type ReviewInput = {
   provider: Provider;
   apiKey: string;
