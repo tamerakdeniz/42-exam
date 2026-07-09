@@ -1,0 +1,524 @@
+import { useEffect, useMemo, useState } from "react";
+import {
+  BookOpen,
+  Brain,
+  CheckCircle2,
+  ChevronRight,
+  Clock3,
+  Code2,
+  FileText,
+  FlaskConical,
+  KeyRound,
+  Play,
+  RotateCcw,
+  Shuffle,
+  Terminal,
+  Timer,
+  XCircle,
+} from "lucide-react";
+import { requestAiReview } from "./aiReview";
+import { exercises, levelLabels, sourceReferences, type Exercise } from "./exerciseCatalog";
+import { getStarterCode, getTestPlan } from "./testPlans";
+import {
+  loadState,
+  saveState,
+  updateProgress,
+  type AppState,
+  type ExamSession,
+  type ProgressStatus,
+  type Provider,
+  type StudyMode,
+} from "./storage";
+import { runExercise, type RunResult } from "./wasmRunner";
+
+const exerciseById = new Map(exercises.map((exercise) => [exercise.id, exercise]));
+const modeLabels: Record<StudyMode, string> = {
+  practice: "Pratik",
+  random: "Rastgele",
+  exam: "Sınav",
+};
+
+function pickRandom<T>(items: T[]): T {
+  return items[Math.floor(Math.random() * items.length)];
+}
+
+function statusLabel(status?: ProgressStatus) {
+  if (status === "passed") return "OK";
+  if (status === "attempted") return "Denenmiş";
+  return "Yeni";
+}
+
+function formatRemaining(session?: ExamSession) {
+  if (!session) return "--:--";
+  const elapsed = Date.now() - new Date(session.startedAt).getTime();
+  const remaining = Math.max(0, session.durationMinutes * 60_000 - elapsed);
+  const minutes = Math.floor(remaining / 60_000);
+  const seconds = Math.floor((remaining % 60_000) / 1000);
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
+function createExamSession(): ExamSession {
+  const exerciseIds = [0, 1, 2, 3, 4, 5].flatMap((level) => {
+    const levelExercises = exercises.filter((exercise) => exercise.level === level);
+    return levelExercises.length ? [pickRandom(levelExercises).id] : [];
+  });
+
+  return {
+    startedAt: new Date().toISOString(),
+    durationMinutes: 120,
+    exerciseIds,
+    currentIndex: 0,
+    completedIds: [],
+  };
+}
+
+function StatCard({ label, value, tone = "neutral" }: { label: string; value: string; tone?: "neutral" | "good" | "warn" }) {
+  return (
+    <div className={`stat-card stat-card--${tone}`}>
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function ModeButton({
+  id,
+  active,
+  icon: Icon,
+  label,
+  onClick,
+}: {
+  id: StudyMode;
+  active: StudyMode;
+  icon: typeof BookOpen;
+  label: string;
+  onClick: (mode: StudyMode) => void;
+}) {
+  return (
+    <button className={active === id ? "mode-button mode-button--active" : "mode-button"} onClick={() => onClick(id)}>
+      <Icon size={16} />
+      {label}
+    </button>
+  );
+}
+
+function ExerciseRow({
+  exercise,
+  active,
+  status,
+  onSelect,
+}: {
+  exercise: Exercise;
+  active: boolean;
+  status?: ProgressStatus;
+  onSelect: (exercise: Exercise) => void;
+}) {
+  return (
+    <button className={active ? "exercise-row exercise-row--active" : "exercise-row"} onClick={() => onSelect(exercise)}>
+      <span className="exercise-row__level">L{exercise.level}</span>
+      <span>
+        <b>{exercise.name}</b>
+        <small>{exercise.expectedFiles}</small>
+      </span>
+      <i className={`status-dot status-dot--${status ?? "new"}`}>{statusLabel(status)}</i>
+    </button>
+  );
+}
+
+function TerminalView({ result, running }: { result?: RunResult; running: boolean }) {
+  if (running) {
+    return (
+      <div className="terminal-view">
+        <p className="terminal-line terminal-line--system">Derleme ve test calisiyor...</p>
+      </div>
+    );
+  }
+
+  if (!result) {
+    return (
+      <div className="terminal-view terminal-view--empty">
+        <Terminal size={18} />
+        <span>Derle & test et düğmesine bastığında clang çıktısı burada görünecek.</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="terminal-view">
+      {result.terminal.map((entry, index) => (
+        <pre className={`terminal-line terminal-line--${entry.stream}`} key={`${entry.stream}-${index}`}>{entry.text}</pre>
+      ))}
+    </div>
+  );
+}
+
+function OutcomeList({ result }: { result?: RunResult }) {
+  if (!result?.outcomes.length) {
+    return <p className="muted-copy">Bu egzersizde otomatik çıktı testi yoksa derleme sonucu ve AI analiziyle devam et.</p>;
+  }
+
+  return (
+    <div className="outcome-list">
+      {result.outcomes.map((outcome) => (
+        <article className={outcome.passed ? "outcome outcome--ok" : "outcome outcome--bad"} key={outcome.name}>
+          <header>
+            {outcome.passed ? <CheckCircle2 size={15} /> : <XCircle size={15} />}
+            <b>{outcome.name}</b>
+            <span>exit {outcome.exitCode}</span>
+          </header>
+          {!outcome.passed && (
+            <dl>
+              <div><dt>Beklenen</dt><dd>{JSON.stringify(outcome.expected)}</dd></div>
+              <div><dt>Gelen</dt><dd>{JSON.stringify(outcome.stdout)}</dd></div>
+            </dl>
+          )}
+        </article>
+      ))}
+    </div>
+  );
+}
+
+export default function App() {
+  const [state, setState] = useState<AppState>(() => loadState(exercises[0]));
+  const [query, setQuery] = useState("");
+  const [levelFilter, setLevelFilter] = useState<number | "all">("all");
+  const [runResult, setRunResult] = useState<RunResult>();
+  const [running, setRunning] = useState(false);
+  const [reviewing, setReviewing] = useState(false);
+  const [aiReview, setAiReview] = useState("");
+  const [tick, setTick] = useState(0);
+
+  const activeExercise = exerciseById.get(state.activeExerciseId) ?? exercises[0];
+  const code = state.codeByExercise[activeExercise.id] ?? getStarterCode(activeExercise);
+  const notes = state.notesByExercise[activeExercise.id] ?? "";
+  const activeProgress = state.progressByExercise[activeExercise.id];
+  const testPlan = getTestPlan(activeExercise);
+
+  useEffect(() => saveState(state), [state]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setTick((value) => value + 1), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const filteredExercises = useMemo(() => {
+    const normalized = query.trim().toLowerCase();
+    return exercises.filter((exercise) => {
+      const levelMatches = levelFilter === "all" || exercise.level === levelFilter;
+      const queryMatches = !normalized
+        || exercise.name.toLowerCase().includes(normalized)
+        || exercise.subject.toLowerCase().includes(normalized)
+        || exercise.tags.some((tag) => tag.includes(normalized));
+      return levelMatches && queryMatches;
+    });
+  }, [levelFilter, query]);
+
+  const stats = useMemo(() => {
+    const progress = Object.values(state.progressByExercise);
+    return {
+      passed: progress.filter((item) => item.status === "passed").length,
+      attempted: progress.filter((item) => item.status === "attempted").length,
+      total: exercises.length,
+    };
+  }, [state.progressByExercise]);
+
+  const updateState = (updater: (current: AppState) => AppState) => setState((current) => updater(current));
+
+  const selectExercise = (exercise: Exercise) => {
+    updateState((current) => ({ ...current, activeExerciseId: exercise.id }));
+    setRunResult(undefined);
+    setAiReview("");
+  };
+
+  const setCode = (nextCode: string) => {
+    updateState((current) => ({
+      ...current,
+      codeByExercise: { ...current.codeByExercise, [activeExercise.id]: nextCode },
+    }));
+  };
+
+  const setNotes = (nextNotes: string) => {
+    updateState((current) => ({
+      ...current,
+      notesByExercise: { ...current.notesByExercise, [activeExercise.id]: nextNotes },
+    }));
+  };
+
+  const setProvider = (provider: Provider) => updateState((current) => ({ ...current, provider }));
+
+  const setApiKey = (provider: Provider, apiKey: string) => {
+    updateState((current) => ({
+      ...current,
+      apiKeys: { ...current.apiKeys, [provider]: apiKey },
+    }));
+  };
+
+  const setModel = (provider: Provider, model: string) => {
+    updateState((current) => ({
+      ...current,
+      models: { ...current.models, [provider]: model },
+    }));
+  };
+
+  const chooseRandom = () => {
+    const pool = filteredExercises.length ? filteredExercises : exercises;
+    const unanswered = pool.filter((exercise) => state.progressByExercise[exercise.id]?.status !== "passed");
+    selectExercise(pickRandom(unanswered.length ? unanswered : pool));
+    updateState((current) => ({ ...current, mode: "random" }));
+  };
+
+  const startExam = () => {
+    const session = createExamSession();
+    updateState((current) => ({
+      ...current,
+      mode: "exam",
+      examSession: session,
+      activeExerciseId: session.exerciseIds[0] ?? current.activeExerciseId,
+    }));
+    setRunResult(undefined);
+    setAiReview("");
+  };
+
+  const advanceExam = () => {
+    if (!state.examSession) return;
+    const nextIndex = Math.min(state.examSession.currentIndex + 1, state.examSession.exerciseIds.length - 1);
+    const nextId = state.examSession.exerciseIds[nextIndex];
+    updateState((current) => ({
+      ...current,
+      activeExerciseId: nextId,
+      examSession: current.examSession && {
+        ...current.examSession,
+        currentIndex: nextIndex,
+        completedIds: Array.from(new Set([...current.examSession.completedIds, activeExercise.id])),
+      },
+    }));
+    setRunResult(undefined);
+    setAiReview("");
+  };
+
+  const runTests = async () => {
+    setRunning(true);
+    setAiReview("");
+    try {
+      const result = await runExercise(activeExercise, code);
+      setRunResult(result);
+      const totalTests = result.outcomes.length || 1;
+      const passedTests = result.outcomes.length ? result.outcomes.filter((outcome) => outcome.passed).length : Number(result.ok);
+      updateState((current) => ({
+        ...current,
+        progressByExercise: {
+          ...current.progressByExercise,
+          [activeExercise.id]: updateProgress(current.progressByExercise[activeExercise.id], passedTests, totalTests),
+        },
+      }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setRunResult({
+        ok: false,
+        compileStdout: "",
+        compileStderr: message,
+        mode: "compile-only",
+        outcomes: [],
+        terminal: [{ stream: "error", text: message }],
+      });
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  const askAi = async () => {
+    setReviewing(true);
+    setAiReview("");
+    try {
+      const review = await requestAiReview({
+        provider: state.provider,
+        apiKey: state.apiKeys[state.provider],
+        model: state.models[state.provider],
+        exercise: activeExercise,
+        code,
+        runResult,
+        notes,
+      });
+      setAiReview(review);
+    } catch (error) {
+      setAiReview(error instanceof Error ? error.message : String(error));
+    } finally {
+      setReviewing(false);
+    }
+  };
+
+  const resetExercise = () => {
+    setCode(getStarterCode(activeExercise));
+    setRunResult(undefined);
+    setAiReview("");
+  };
+
+  const mode = state.mode;
+  const exam = state.examSession;
+  const remaining = tick >= 0 ? formatRemaining(exam) : "--:--";
+
+  return (
+    <div className="studio-shell">
+      <aside className="left-panel">
+        <div className="brand-block">
+          <div className="brand-mark">42</div>
+          <div>
+            <span>Exam Forge</span>
+            <strong>C Piscine Studio</strong>
+          </div>
+        </div>
+
+        <div className="mode-switcher">
+          <ModeButton id="practice" active={mode} icon={BookOpen} label={modeLabels.practice} onClick={(nextMode) => updateState((current) => ({ ...current, mode: nextMode }))} />
+          <ModeButton id="random" active={mode} icon={Shuffle} label={modeLabels.random} onClick={() => chooseRandom()} />
+          <ModeButton id="exam" active={mode} icon={Timer} label={modeLabels.exam} onClick={(nextMode) => updateState((current) => ({ ...current, mode: nextMode }))} />
+        </div>
+
+        <div className="stats-grid">
+          <StatCard label="Tamamlanan" value={`${stats.passed}`} tone="good" />
+          <StatCard label="Denenen" value={`${stats.attempted}`} tone="warn" />
+          <StatCard label="Havuz" value={`${stats.total}`} />
+        </div>
+
+        <div className="search-block">
+          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Soru, tag veya subject ara" />
+          <div className="level-tabs" aria-label="Seviye filtresi">
+            <button className={levelFilter === "all" ? "active" : ""} onClick={() => setLevelFilter("all")}>Hepsi</button>
+            {[0, 1, 2, 3, 4, 5].map((level) => (
+              <button className={levelFilter === level ? "active" : ""} onClick={() => setLevelFilter(level)} key={level}>L{level}</button>
+            ))}
+          </div>
+        </div>
+
+        <div className="exercise-list" aria-label="Egzersiz listesi">
+          {filteredExercises.map((exercise) => (
+            <ExerciseRow
+              exercise={exercise}
+              active={exercise.id === activeExercise.id}
+              status={state.progressByExercise[exercise.id]?.status}
+              onSelect={selectExercise}
+              key={exercise.id}
+            />
+          ))}
+        </div>
+      </aside>
+
+      <main className="workspace">
+        <header className="topbar">
+          <div>
+            <span className="eyebrow">Level {activeExercise.level} / {levelLabels[activeExercise.level]}</span>
+            <h1>{activeExercise.name}</h1>
+          </div>
+          <div className="topbar-actions">
+            <button onClick={chooseRandom}><Shuffle size={16} /> Rastgele</button>
+            <button onClick={startExam}><Timer size={16} /> Sınav başlat</button>
+          </div>
+        </header>
+
+        {mode === "exam" && (
+          <section className="exam-strip">
+            <span><Clock3 size={16} /> Kalan {remaining}</span>
+            <b>{exam ? `${exam.currentIndex + 1}/${exam.exerciseIds.length}` : "Sınav bekliyor"}</b>
+            <button onClick={startExam}><RotateCcw size={15} /> Yeniden başlat</button>
+            <button onClick={advanceExam} disabled={!exam || exam.currentIndex >= exam.exerciseIds.length - 1}>Sonraki soru <ChevronRight size={15} /></button>
+          </section>
+        )}
+
+        <section className="exercise-hero">
+          <div>
+            <span className="eyebrow">Subject</span>
+            <pre>{activeExercise.subject}</pre>
+          </div>
+          <aside>
+            <div><FileText size={16} /><span>Expected</span><b>{activeExercise.expectedFiles}</b></div>
+            <div><Code2 size={16} /><span>Allowed</span><b>{activeExercise.allowedFunctions}</b></div>
+            <div><FlaskConical size={16} /><span>Test</span><b>{testPlan.mode === "compile-only" ? "compile only" : `${testPlan.mode} / ${testPlan.mode === "program" ? testPlan.cases?.length ?? 0 : 1}`}</b></div>
+            <a href={activeExercise.sourceUrl} target="_blank" rel="noreferrer">Kaynak subject</a>
+          </aside>
+        </section>
+
+        <section className="work-grid">
+          <div className="editor-panel">
+            <div className="panel-header">
+              <div>
+                <span className="eyebrow">student.c</span>
+                <h2>Kod</h2>
+              </div>
+              <div className="action-row">
+                <button onClick={resetExercise}><RotateCcw size={15} /> Sıfırla</button>
+                <button className="primary" onClick={runTests} disabled={running}><Play size={15} /> Derle & test et</button>
+              </div>
+            </div>
+            <textarea className="code-editor" spellCheck={false} value={code} onChange={(event) => setCode(event.target.value)} />
+          </div>
+
+          <div className="result-panel">
+            <div className="panel-header">
+              <div>
+                <span className="eyebrow">Terminal</span>
+                <h2>Çıktı</h2>
+              </div>
+              <span className={`result-pill result-pill--${runResult?.ok ? "ok" : activeProgress?.status ?? "new"}`}>{statusLabel(activeProgress?.status)}</span>
+            </div>
+            <TerminalView result={runResult} running={running} />
+            <OutcomeList result={runResult} />
+          </div>
+        </section>
+
+        <section className="coach-grid">
+          <div className="ai-panel">
+            <div className="panel-header">
+              <div>
+                <span className="eyebrow">AI Mentor</span>
+                <h2>Hata analizi</h2>
+              </div>
+              <button className="primary" onClick={askAi} disabled={reviewing}><Brain size={15} /> Analiz et</button>
+            </div>
+            <div className="provider-grid">
+              <label>
+                Sağlayıcı
+                <select value={state.provider} onChange={(event) => setProvider(event.target.value as Provider)}>
+                  <option value="gemini">Gemini</option>
+                  <option value="claude">Claude</option>
+                </select>
+              </label>
+              <label>
+                Model
+                <input value={state.models[state.provider]} onChange={(event) => setModel(state.provider, event.target.value)} />
+              </label>
+              <label className="span-2">
+                <KeyRound size={14} /> API key
+                <input
+                  type="password"
+                  value={state.apiKeys[state.provider]}
+                  onChange={(event) => setApiKey(state.provider, event.target.value)}
+                  placeholder={`${state.provider} API key`}
+                />
+              </label>
+            </div>
+            <p className="hint">Anahtar localStorage içinde bu cihazda saklanır ve istek doğrudan sağlayıcı API’sine gider.</p>
+            <textarea className="notes-box" value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="Takıldığın noktayı veya kendi varsayımını yaz..." />
+            <div className="review-output">
+              {reviewing ? "AI analiz ediyor..." : aiReview || "Derleme/testten sonra analiz alırsan neden KO aldığını ve nasıl düzelteceğini burada göreceksin."}
+            </div>
+          </div>
+
+          <div className="sources-panel">
+            <div className="panel-header">
+              <div>
+                <span className="eyebrow">Kaynak havuzu</span>
+                <h2>69 sınav egzersizi</h2>
+              </div>
+            </div>
+            <p>Çözümler kesin doğru kabul edilmez; subject ve test sonucu önceliklidir. İlerleme, kod ve notlar sadece bu tarayıcıda kalır.</p>
+            <div className="source-links">
+              {sourceReferences.map((source) => (
+                <a href={source.url} target="_blank" rel="noreferrer" key={source.url}>{source.label}<ChevronRight size={14} /></a>
+              ))}
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+  );
+}
