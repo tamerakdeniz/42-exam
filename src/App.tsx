@@ -11,7 +11,6 @@ import {
   History,
   KeyRound,
   Play,
-  RefreshCw,
   RotateCcw,
   Shuffle,
   Terminal,
@@ -21,6 +20,7 @@ import {
 } from "lucide-react";
 import { fallbackModels, fetchModels, requestAiReview } from "./aiReview";
 import { CodeEditor } from "./CodeEditor";
+import { Markdown } from "./Markdown";
 import { exercises, levelLabels, sourceReferences, type Exercise } from "./exerciseCatalog";
 import { getStarterCode, getTestPlan } from "./testPlans";
 import {
@@ -195,7 +195,6 @@ export default function App() {
   const [aiError, setAiError] = useState("");
   const [selectedReviewId, setSelectedReviewId] = useState<string | null>(null);
   const [availableModels, setAvailableModels] = useState<Record<Provider, string[]>>(fallbackModels);
-  const [modelsLoading, setModelsLoading] = useState(false);
   const [tick, setTick] = useState(0);
 
   const activeExercise = exerciseById.get(state.activeExerciseId) ?? exercises[0];
@@ -216,24 +215,12 @@ export default function App() {
   const provider = state.provider;
   const providerKey = state.apiKeys[provider];
 
-  const refreshModels = () => {
-    setModelsLoading(true);
-    fetchModels(provider, state.apiKeys[provider])
-      .then((list) => setAvailableModels((current) => ({ ...current, [provider]: list })))
-      .finally(() => setModelsLoading(false));
-  };
-
   useEffect(() => {
     let cancelled = false;
-    setModelsLoading(true);
     const handle = window.setTimeout(() => {
-      fetchModels(provider, providerKey)
-        .then((list) => {
-          if (!cancelled) setAvailableModels((current) => ({ ...current, [provider]: list }));
-        })
-        .finally(() => {
-          if (!cancelled) setModelsLoading(false);
-        });
+      fetchModels(provider, providerKey).then((list) => {
+        if (!cancelled) setAvailableModels((current) => ({ ...current, [provider]: list }));
+      });
     }, 500);
     return () => {
       cancelled = true;
@@ -524,7 +511,7 @@ export default function App() {
                 <button className="primary" onClick={runTests} disabled={running}><Play size={15} /> Derle & test et</button>
               </div>
             </div>
-            <CodeEditor className="code-editor" value={code} onChange={setCode} />
+            <CodeEditor value={code} onChange={setCode} />
           </div>
 
           <div className="result-panel">
@@ -558,18 +545,7 @@ export default function App() {
                 </select>
               </label>
               <label>
-                <span className="label-row">
-                  Model
-                  <button
-                    type="button"
-                    className="icon-button"
-                    onClick={refreshModels}
-                    disabled={modelsLoading}
-                    title="Model listesini yenile"
-                  >
-                    <RefreshCw size={12} className={modelsLoading ? "spin" : undefined} />
-                  </button>
-                </span>
+                Model
                 <select value={state.models[state.provider]} onChange={(event) => setModel(state.provider, event.target.value)}>
                   {Array.from(new Set([state.models[state.provider], ...(availableModels[state.provider] ?? [])])).map((model) => (
                     <option value={model} key={model}>{model}</option>
@@ -595,11 +571,15 @@ export default function App() {
               </div>
             )}
             <div className="review-output">
-              {reviewing
-                ? "AI analiz ediyor..."
-                : aiError
-                  ? aiError
-                  : selectedReview?.review || "Derleme/testten sonra analiz alırsan neden KO aldığını ve nasıl düzelteceğini burada göreceksin."}
+              {reviewing ? (
+                "AI analiz ediyor..."
+              ) : aiError ? (
+                aiError
+              ) : selectedReview?.review ? (
+                <Markdown text={selectedReview.review} />
+              ) : (
+                "Derleme/testten sonra analiz alırsan neden KO aldığını ve nasıl düzelteceğini burada göreceksin."
+              )}
             </div>
           </div>
 

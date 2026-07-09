@@ -1,9 +1,17 @@
-import { useLayoutEffect, useRef, type KeyboardEvent } from "react";
+import { useLayoutEffect, useRef, type KeyboardEvent, type ReactNode, type UIEvent } from "react";
 
 const INDENT = "    ";
 const INDENT_SIZE = INDENT.length;
 const PAIRS: Record<string, string> = { "{": "}", "(": ")", "[": "]" };
 const CLOSERS = new Set(Object.values(PAIRS));
+const BRACKET_DEPTH_COLORS = 3;
+
+const KEYWORDS = new Set([
+  "auto", "break", "case", "char", "const", "continue", "default", "do", "double", "else", "enum",
+  "extern", "float", "for", "goto", "if", "inline", "int", "long", "register", "restrict", "return",
+  "short", "signed", "sizeof", "static", "struct", "switch", "typedef", "union", "unsigned", "void",
+  "volatile", "while", "size_t", "ssize_t", "NULL",
+]);
 
 type Props = {
   value: string;
@@ -52,8 +60,119 @@ function indentBlock(value: string, start: number, end: number, dedent: boolean)
   return { value: nextValue, selectionStart, selectionEnd };
 }
 
+// Bagimliliksiz, XSS'e kapali (React node ureten) hafif C tokenizasyonu.
+// Ayrica parantez ciftlerini derinlige gore renklendirir.
+function highlight(code: string): ReactNode[] {
+  const nodes: ReactNode[] = [];
+  let buffer = "";
+  let key = 0;
+  let depth = 0;
+
+  const flush = () => {
+    if (buffer) {
+      nodes.push(buffer);
+      buffer = "";
+    }
+  };
+  const emit = (className: string, text: string) => {
+    flush();
+    nodes.push(
+      <span className={className} key={key++}>
+        {text}
+      </span>,
+    );
+  };
+
+  const isIdentStart = (ch: string) => /[A-Za-z_]/.test(ch);
+  const isIdentPart = (ch: string) => /[A-Za-z0-9_]/.test(ch);
+  const isDigit = (ch: string) => /[0-9]/.test(ch);
+
+  let i = 0;
+  while (i < code.length) {
+    const ch = code[i];
+    const next = code[i + 1];
+
+    if (ch === "/" && next === "/") {
+      let end = code.indexOf("\n", i);
+      if (end === -1) end = code.length;
+      emit("tok-comment", code.slice(i, end));
+      i = end;
+      continue;
+    }
+
+    if (ch === "/" && next === "*") {
+      let end = code.indexOf("*/", i + 2);
+      end = end === -1 ? code.length : end + 2;
+      emit("tok-comment", code.slice(i, end));
+      i = end;
+      continue;
+    }
+
+    if (ch === "#") {
+      let end = code.indexOf("\n", i);
+      if (end === -1) end = code.length;
+      emit("tok-preproc", code.slice(i, end));
+      i = end;
+      continue;
+    }
+
+    if (ch === '"' || ch === "'") {
+      let j = i + 1;
+      while (j < code.length && code[j] !== ch) {
+        if (code[j] === "\\") j += 1;
+        j += 1;
+      }
+      j = Math.min(j + 1, code.length);
+      emit("tok-string", code.slice(i, j));
+      i = j;
+      continue;
+    }
+
+    if (isDigit(ch) || (ch === "." && isDigit(next ?? ""))) {
+      let j = i;
+      while (j < code.length && /[0-9a-fA-FxX._]/.test(code[j])) j += 1;
+      emit("tok-number", code.slice(i, j));
+      i = j;
+      continue;
+    }
+
+    if (isIdentStart(ch)) {
+      let j = i;
+      while (j < code.length && isIdentPart(code[j])) j += 1;
+      const word = code.slice(i, j);
+      if (KEYWORDS.has(word)) emit("tok-keyword", word);
+      else buffer += word;
+      i = j;
+      continue;
+    }
+
+    if (ch === "{" || ch === "(" || ch === "[") {
+      const color = depth % BRACKET_DEPTH_COLORS;
+      depth += 1;
+      emit(`tok-bracket tok-bracket--${color}`, ch);
+      i += 1;
+      continue;
+    }
+
+    if (ch === "}" || ch === ")" || ch === "]") {
+      depth = Math.max(0, depth - 1);
+      const color = depth % BRACKET_DEPTH_COLORS;
+      emit(`tok-bracket tok-bracket--${color}`, ch);
+      i += 1;
+      continue;
+    }
+
+    buffer += ch;
+    i += 1;
+  }
+
+  flush();
+  return nodes;
+}
+
 export function CodeEditor({ value, onChange, className }: Props) {
   const ref = useRef<HTMLTextAreaElement>(null);
+  const highlightRef = useRef<HTMLPreElement>(null);
   const pendingSelection = useRef<{ start: number; end: number } | null>(null);
 
   useLayoutEffect(() => {
@@ -64,6 +183,13 @@ export function CodeEditor({ value, onChange, className }: Props) {
       pendingSelection.current = null;
     }
   }, [value]);
+
+  const syncScroll = (event: UIEvent<HTMLTextAreaElement>) => {
+    const pre = highlightRef.current;
+    if (!pre) return;
+    pre.scrollTop = event.currentTarget.scrollTop;
+    pre.scrollLeft = event.currentTarget.scrollLeft;
+  };
 
   const apply = (edit: Edit) => {
     pendingSelection.current = { start: edit.selectionStart, end: edit.selectionEnd };
@@ -166,13 +292,20 @@ export function CodeEditor({ value, onChange, className }: Props) {
   };
 
   return (
-    <textarea
-      ref={ref}
-      className={className}
-      spellCheck={false}
-      value={value}
-      onKeyDown={handleKeyDown}
-      onChange={(event) => onChange(event.target.value)}
-    />
+    <div className={className ? `code-editor ${className}` : "code-editor"}>
+      <pre className="code-editor__highlight" aria-hidden="true" ref={highlightRef}>
+        {highlight(value)}
+        {"\n"}
+      </pre>
+      <textarea
+        ref={ref}
+        className="code-editor__input"
+        spellCheck={false}
+        value={value}
+        onKeyDown={handleKeyDown}
+        onScroll={syncScroll}
+        onChange={(event) => onChange(event.target.value)}
+      />
+    </div>
   );
 }
