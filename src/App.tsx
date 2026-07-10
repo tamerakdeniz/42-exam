@@ -36,7 +36,7 @@ import {
   type Provider,
   type StudyMode,
 } from "./storage";
-import { runExercise, type RunResult, type TerminalLine } from "./wasmRunner";
+import { prewarmRunner, runExercise, type RunResult, type TerminalLine } from "./wasmRunner";
 
 const exerciseById = new Map(exercises.map((exercise) => [exercise.id, exercise]));
 const modeLabels: Record<StudyMode, string> = {
@@ -217,6 +217,10 @@ export default function App() {
   useEffect(() => {
     const timer = window.setInterval(() => setTick((value) => value + 1), 1000);
     return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    prewarmRunner();
   }, []);
 
   useEffect(() => {

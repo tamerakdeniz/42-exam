@@ -25,15 +25,24 @@ export type RunResult = {
 };
 
 type WasmerSdk = typeof import("@wasmer/sdk");
+type WasmerRuntime = InstanceType<WasmerSdk["Runtime"]>;
+type SdkBundle = { sdk: WasmerSdk; runtime: WasmerRuntime };
+type WasmerApp = Awaited<ReturnType<WasmerSdk["Wasmer"]["fromFile"]>>;
+type WasmerCommand = NonNullable<WasmerApp["entrypoint"]>;
 
-let sdkPromise: Promise<WasmerSdk> | undefined;
+const COMPILE_TIMEOUT_MS = 90_000;
+const EXECUTE_TIMEOUT_MS = 20_000;
+
+let sdkPromise: Promise<SdkBundle> | undefined;
 let clangPromise: Promise<unknown> | undefined;
 
 function line(stream: TerminalLine["stream"], text: string): TerminalLine {
   return { stream, text };
 }
 
-async function getSdk(onLine: (entry: TerminalLine) => void): Promise<WasmerSdk> {
+// SDK ve runtime yalnizca bir kez baslatilir; ayni runtime (dolayisiyla ayni
+// threadpool/cache) hem clang hem de calistirilan programlar arasinda paylasilir.
+async function getSdk(onLine: (entry: TerminalLine) => void): Promise<SdkBundle> {
   if (!sdkPromise) {
     sdkPromise = (async () => {
       onLine(line("system", "Wasmer SDK yukleniyor..."));
@@ -42,20 +51,34 @@ async function getSdk(onLine: (entry: TerminalLine) => void): Promise<WasmerSdk>
         import("@wasmer/sdk/wasm?url"),
       ]);
       await sdk.init({ module: wasmModule.default });
-      return sdk;
+      return { sdk, runtime: new sdk.Runtime() };
     })();
   }
   return sdkPromise;
 }
 
-async function getClang(sdk: WasmerSdk, onLine: (entry: TerminalLine) => void) {
+async function getClang(bundle: SdkBundle, onLine: (entry: TerminalLine) => void) {
   if (!clangPromise) {
     clangPromise = (async () => {
       onLine(line("system", "clang/clang paketi hazirlaniyor; ilk kullanimda indirme uzun surebilir."));
-      return sdk.Wasmer.fromRegistry("clang/clang");
+      return bundle.sdk.Wasmer.fromRegistry("clang/clang", bundle.runtime);
     })();
   }
-  return clangPromise as Promise<Awaited<ReturnType<typeof sdk.Wasmer.fromRegistry>>>;
+  return clangPromise as Promise<Awaited<ReturnType<WasmerSdk["Wasmer"]["fromRegistry"]>>>;
+}
+
+/**
+ * SDK + clang paketini arka planda onceden yukler. Uygulama acilir acilmaz
+ * cagirildiginda, kullanici "Derle & test et"e bastiginda agir indirme/baslatma
+ * islemi çoktan tamamlanmis olur.
+ */
+export function prewarmRunner() {
+  const noop = () => {};
+  getSdk(noop)
+    .then((bundle) => getClang(bundle, noop))
+    .catch(() => {
+      // Prewarm best-effort; hata olursa gercek calistirmada tekrar denenir.
+    });
 }
 
 async function waitWithTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
@@ -71,8 +94,7 @@ async function waitWithTimeout<T>(promise: Promise<T>, ms: number, label: string
 }
 
 async function compile(
-  sdk: WasmerSdk,
-  clang: Awaited<ReturnType<typeof sdk.Wasmer.fromRegistry>>,
+  clang: Awaited<ReturnType<WasmerSdk["Wasmer"]["fromRegistry"]>>,
   project: InstanceType<WasmerSdk["Directory"]>,
   inputFile: string,
   outputFile: string,
@@ -91,24 +113,19 @@ async function compile(
     ],
     mount: { "/project": project },
   });
-  return waitWithTimeout(instance.wait(), 60_000, "Derleme");
+  return waitWithTimeout(instance.wait(), COMPILE_TIMEOUT_MS, "Derleme");
 }
 
-async function execute(
-  sdk: WasmerSdk,
-  project: InstanceType<WasmerSdk["Directory"]>,
-  outputFile: string,
-  testCase: ProgramCase,
-) {
-  const wasm = await project.readFile(outputFile);
-  const app = await sdk.Wasmer.fromFile(wasm);
-  const entrypoint = app.entrypoint;
-  if (!entrypoint) throw new Error("Derlenen wasm calistirilabilir entrypoint icermiyor.");
-  const instance = await entrypoint.run({
+// Derlenen wasm bir kez pakete cevrilir (fromFile) ve entrypoint tum testlerde
+// yeniden kullanilir. Onceden fromFile her test icin cagriliyordu; bu hem
+// dosyayi tekrar tekrar parse ediyor hem de her seferinde yeni bir runtime/
+// threadpool aciyordu -- cok testli egzersizlerdeki timeout'larin ana sebebi.
+async function runCase(entry: WasmerCommand, testCase: ProgramCase) {
+  const instance = await entry.run({
     args: testCase.args ?? [],
     stdin: testCase.stdin,
   });
-  return waitWithTimeout(instance.wait(), 20_000, testCase.name);
+  return waitWithTimeout(instance.wait(), EXECUTE_TIMEOUT_MS, testCase.name);
 }
 
 function recordOutput(emit: (entry: TerminalLine) => void, prefix: string, stdout: string, stderr: string) {
@@ -126,9 +143,9 @@ export async function runExercise(
     terminal.push(entry);
     onLine?.(entry);
   };
-  const sdk = await getSdk(emit);
-  const clang = await getClang(sdk, emit);
-  const project = new sdk.Directory();
+  const bundle = await getSdk(emit);
+  const clang = await getClang(bundle, emit);
+  const project = new bundle.sdk.Directory();
   const plan = getTestPlan(exercise);
 
   await project.writeFile("student.c", code);
@@ -140,7 +157,7 @@ export async function runExercise(
   if (plan.harness) await project.writeFile("test_runner.c", plan.harness);
 
   emit(line("system", `cc -Wall -Wextra -Werror ${inputFile} -o exercise.wasm`));
-  const compileOutput = await compile(sdk, clang, project, inputFile, "exercise.wasm");
+  const compileOutput = await compile(clang, project, inputFile, "exercise.wasm");
   recordOutput(emit, "compile", compileOutput.stdout, compileOutput.stderr);
 
   if (!compileOutput.ok) {
@@ -171,11 +188,18 @@ export async function runExercise(
     ? [{ name: "fonksiyon test harness", expectedStdout: plan.expectedStdout ?? "" }]
     : plan.cases ?? [];
 
+  // Derlenen wasm'i bir kez paket olarak yukle ve entrypoint'i tum testlerde
+  // yeniden kullan (paylasilan runtime uzerinde).
+  const wasmBytes = await project.readFile("exercise.wasm");
+  const app = await bundle.sdk.Wasmer.fromFile(wasmBytes, bundle.runtime);
+  const appEntry = app.entrypoint;
+  if (!appEntry) throw new Error("Derlenen wasm calistirilabilir entrypoint icermiyor.");
+
   const outcomes: TestOutcome[] = [];
   for (const testCase of cases) {
     emit(line("system", `./exercise ${testCase.args?.map((arg) => JSON.stringify(arg)).join(" ") ?? ""}`.trim()));
     try {
-      const output = await execute(sdk, project, "exercise.wasm", testCase);
+      const output = await runCase(appEntry, testCase);
       recordOutput(emit, testCase.name, output.stdout, output.stderr);
       const passed = output.ok && output.stdout === testCase.expectedStdout;
       outcomes.push({
