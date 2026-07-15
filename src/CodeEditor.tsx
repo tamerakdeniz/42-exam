@@ -1,6 +1,6 @@
 import { useLayoutEffect, useRef, type KeyboardEvent, type ReactNode, type UIEvent } from "react";
 
-const INDENT = "    ";
+const INDENT = "\t";
 const INDENT_SIZE = INDENT.length;
 const PAIRS: Record<string, string> = { "{": "}", "(": ")", "[": "]" };
 const CLOSERS = new Set(Object.values(PAIRS));
@@ -31,6 +31,12 @@ function currentIndent(value: string, caret: number): string {
   return match ? match[0] : "";
 }
 
+function oneLevelDedented(indent: string): string {
+  if (indent.endsWith("\t")) return indent.slice(0, -1);
+  if (indent.endsWith("    ")) return indent.slice(0, -4);
+  return indent.replace(/[ \t]$/, "");
+}
+
 // Secili satirlarin her birine bir seviye girinti ekler / cikarir.
 function indentBlock(value: string, start: number, end: number, dedent: boolean): Edit {
   const blockStart = lineStartIndex(value, start);
@@ -42,7 +48,7 @@ function indentBlock(value: string, start: number, end: number, dedent: boolean)
 
   const lines = block.split("\n").map((lineText, index) => {
     if (dedent) {
-      const match = lineText.match(/^( {1,4}|\t)/);
+      const match = lineText.match(/^(\t| {1,4})/);
       const removed = match ? match[0].length : 0;
       if (index === 0) removedFromFirst = removed;
       removedTotal += removed;
@@ -266,6 +272,23 @@ export function CodeEditor({ value, onChange, className }: Props) {
       return;
     }
 
+    if (key === "}" && start === end) {
+      const lineStart = lineStartIndex(value, start);
+      const beforeCaret = value.slice(lineStart, start);
+      if (/^[ \t]+$/.test(beforeCaret)) {
+        event.preventDefault();
+        const nextIndent = oneLevelDedented(beforeCaret);
+        const insertion = `${nextIndent}}`;
+        const nextCaret = lineStart + insertion.length;
+        apply({
+          value: value.slice(0, lineStart) + insertion + value.slice(end),
+          selectionStart: nextCaret,
+          selectionEnd: nextCaret,
+        });
+        return;
+      }
+    }
+
     if (key === "Backspace" && start === end && start > 0) {
       const prev = value[start - 1];
       if (prev in PAIRS && value[start] === PAIRS[prev]) {
@@ -279,8 +302,17 @@ export function CodeEditor({ value, onChange, className }: Props) {
       }
       const lineStart = lineStartIndex(value, start);
       const beforeCaret = value.slice(lineStart, start);
+      if (beforeCaret.endsWith("\t")) {
+        event.preventDefault();
+        apply({
+          value: value.slice(0, start - 1) + value.slice(start),
+          selectionStart: start - 1,
+          selectionEnd: start - 1,
+        });
+        return;
+      }
       if (beforeCaret.length > 0 && /^ +$/.test(beforeCaret)) {
-        const remove = ((beforeCaret.length - 1) % INDENT_SIZE) + 1;
+        const remove = ((beforeCaret.length - 1) % 4) + 1;
         event.preventDefault();
         apply({
           value: value.slice(0, start - remove) + value.slice(start),
@@ -300,6 +332,7 @@ export function CodeEditor({ value, onChange, className }: Props) {
       <textarea
         ref={ref}
         className="code-editor__input"
+        aria-label="C kod editörü"
         spellCheck={false}
         value={value}
         onKeyDown={handleKeyDown}

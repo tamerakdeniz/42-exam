@@ -1,4 +1,5 @@
 import type { Exercise } from "./exerciseCatalog";
+import type { RunResult } from "./wasmRunner";
 
 export type StudyMode = "practice" | "random" | "exam";
 export type Provider = "gemini" | "claude";
@@ -27,6 +28,17 @@ export type AiReviewEntry = {
   model: string;
   review: string;
   status?: ProgressStatus;
+  exerciseName?: string;
+  codeSnapshot?: string;
+  notesSnapshot?: string;
+  runSummary?: string;
+};
+
+export type RunRecord = {
+  id: string;
+  createdAt: string;
+  codeSnapshot: string;
+  result: RunResult;
 };
 
 export type AppState = {
@@ -39,6 +51,7 @@ export type AppState = {
   notesByExercise: Record<string, string>;
   progressByExercise: Record<string, ExerciseProgress>;
   aiHistoryByExercise: Record<string, AiReviewEntry[]>;
+  runRecordsByExercise: Record<string, RunRecord>;
   examSession?: ExamSession;
 };
 
@@ -53,13 +66,14 @@ export const defaultState = (firstExercise: Exercise): AppState => ({
     claude: "",
   },
   models: {
-    gemini: "gemini-2.5-flash",
-    claude: "claude-3-5-haiku-latest",
+    gemini: "gemini-3-1-flash-lite",
+    claude: "claude-haiku-4-5",
   },
   codeByExercise: {},
   notesByExercise: {},
   progressByExercise: {},
   aiHistoryByExercise: {},
+  runRecordsByExercise: {},
 });
 
 export function loadState(firstExercise: Exercise): AppState {
@@ -76,6 +90,7 @@ export function loadState(firstExercise: Exercise): AppState {
       notesByExercise: parsed.notesByExercise ?? {},
       progressByExercise: parsed.progressByExercise ?? {},
       aiHistoryByExercise: parsed.aiHistoryByExercise ?? {},
+      runRecordsByExercise: parsed.runRecordsByExercise ?? {},
     };
   } catch {
     return defaultState(firstExercise);
@@ -83,7 +98,11 @@ export function loadState(firstExercise: Exercise): AppState {
 }
 
 export function saveState(state: AppState) {
-  localStorage.setItem(storageKey, JSON.stringify(state));
+  try {
+    localStorage.setItem(storageKey, JSON.stringify(state));
+  } catch {
+    // localStorage quota/private-mode errors should not break the editor loop.
+  }
 }
 
 export function updateProgress(

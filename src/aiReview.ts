@@ -7,10 +7,10 @@ import type { RunResult } from "./wasmRunner";
 // liste anahtar yokken veya istek basarisiz olursa yedek (fallback) olarak kullanilir.
 export const fallbackModels: Record<Provider, string[]> = {
   gemini: [
-    "gemini-3-5-flash",
-    "gemini-3-5-flash-lite",
-    "gemini-3-1-flash",
     "gemini-3-1-flash-lite",
+    "gemini-3-5-flash",
+    "gemini-3-1-flash",
+    "gemini-3-5-flash-lite",
     "gemini-2.5-flash",
     "gemini-2.5-flash-lite",
     "gemini-2.5-pro",
@@ -21,6 +21,8 @@ export const fallbackModels: Record<Provider, string[]> = {
     "gemini-1.5-pro",
   ],
   claude: [
+    "claude-haiku-4-5",
+    "claude-sonnet-5",
     "claude-3-5-haiku-latest",
     "claude-3-5-sonnet-latest",
     "claude-3-7-sonnet-latest",
@@ -31,39 +33,65 @@ export const fallbackModels: Record<Provider, string[]> = {
 };
 
 function sortModels(models: string[]): string[] {
-  return Array.from(new Set(models)).sort((a, b) => a.localeCompare(b));
+  return Array.from(new Set(models)).sort((a, b) => {
+    const preferredA = fallbackModels.gemini.includes(a) || fallbackModels.claude.includes(a);
+    const preferredB = fallbackModels.gemini.includes(b) || fallbackModels.claude.includes(b);
+    if (preferredA !== preferredB) return preferredA ? -1 : 1;
+    return a.localeCompare(b);
+  });
 }
 
 async function fetchGeminiModels(apiKey: string): Promise<string[]> {
-  const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}&pageSize=200`,
-  );
-  const data = (await response.json()) as {
-    models?: Array<{ name?: string; supportedGenerationMethods?: string[] }>;
-    error?: { message?: string };
-  };
-  if (!response.ok) throw new Error(data.error?.message ?? "Gemini model listesi alinamadi.");
-  const models = (data.models ?? [])
-    .filter((model) => model.supportedGenerationMethods?.includes("generateContent"))
-    .map((model) => (model.name ?? "").replace(/^models\//, ""))
-    .filter(Boolean);
+  const models: string[] = [];
+  let pageToken = "";
+  do {
+    const params = new URLSearchParams({ pageSize: "1000" });
+    if (pageToken) params.set("pageToken", pageToken);
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?${params.toString()}`, {
+      headers: { "x-goog-api-key": apiKey },
+    });
+    const data = (await response.json()) as {
+      models?: Array<{ name?: string; supportedGenerationMethods?: string[] }>;
+      nextPageToken?: string;
+      error?: { message?: string };
+    };
+    if (!response.ok) throw new Error(data.error?.message ?? "Gemini model listesi alinamadi.");
+    models.push(
+      ...(data.models ?? [])
+        .filter((model) => model.supportedGenerationMethods?.includes("generateContent"))
+        .map((model) => (model.name ?? "").replace(/^models\//, ""))
+        .filter(Boolean),
+    );
+    pageToken = data.nextPageToken ?? "";
+  } while (pageToken);
   return sortModels(models);
 }
 
 async function fetchClaudeModels(apiKey: string): Promise<string[]> {
-  const response = await fetch("https://api.anthropic.com/v1/models?limit=200", {
-    headers: {
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-      "anthropic-dangerous-direct-browser-access": "true",
-    },
-  });
-  const data = (await response.json()) as {
-    data?: Array<{ id?: string }>;
-    error?: { message?: string };
-  };
-  if (!response.ok) throw new Error(data.error?.message ?? "Claude model listesi alinamadi.");
-  const models = (data.data ?? []).map((model) => model.id ?? "").filter(Boolean);
+  const models: string[] = [];
+  let afterId = "";
+  let hasMore = false;
+  do {
+    const params = new URLSearchParams({ limit: "1000" });
+    if (afterId) params.set("after_id", afterId);
+    const response = await fetch(`https://api.anthropic.com/v1/models?${params.toString()}`, {
+      headers: {
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+        "anthropic-dangerous-direct-browser-access": "true",
+      },
+    });
+    const data = (await response.json()) as {
+      data?: Array<{ id?: string }>;
+      has_more?: boolean;
+      error?: { message?: string };
+    };
+    if (!response.ok) throw new Error(data.error?.message ?? "Claude model listesi alinamadi.");
+    const page = (data.data ?? []).map((model) => model.id ?? "").filter(Boolean);
+    models.push(...page);
+    afterId = page.at(-1) ?? "";
+    hasMore = Boolean(data.has_more && afterId);
+  } while (hasMore);
   return sortModels(models);
 }
 
@@ -150,9 +178,10 @@ export async function requestAiReview(input: ReviewInput): Promise<string> {
   const prompt = buildUserPrompt(input);
 
   if (input.provider === "gemini") {
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(input.model)}:generateContent?key=${encodeURIComponent(input.apiKey)}`, {
+    const model = input.model.replace(/^models\//, "");
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "x-goog-api-key": input.apiKey },
       body: JSON.stringify({
         systemInstruction: { parts: [{ text: systemPrompt }] },
         contents: [{ role: "user", parts: [{ text: prompt }] }],

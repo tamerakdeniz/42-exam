@@ -31,7 +31,7 @@ type WasmerApp = Awaited<ReturnType<WasmerSdk["Wasmer"]["fromFile"]>>;
 type WasmerCommand = NonNullable<WasmerApp["entrypoint"]>;
 
 const COMPILE_TIMEOUT_MS = 90_000;
-const EXECUTE_TIMEOUT_MS = 20_000;
+const EXECUTE_TIMEOUT_MS = 60_000;
 
 let sdkPromise: Promise<SdkBundle> | undefined;
 let clangPromise: Promise<unknown> | undefined;
@@ -125,7 +125,7 @@ async function runCase(entry: WasmerCommand, testCase: ProgramCase) {
     args: testCase.args ?? [],
     stdin: testCase.stdin,
   });
-  return waitWithTimeout(instance.wait(), EXECUTE_TIMEOUT_MS, testCase.name);
+  return waitWithTimeout(instance.wait(), EXECUTE_TIMEOUT_MS, `Program testi "${testCase.name}"`);
 }
 
 function recordOutput(emit: (entry: TerminalLine) => void, prefix: string, stdout: string, stderr: string) {

@@ -34,6 +34,7 @@ import {
   type ExamSession,
   type ProgressStatus,
   type Provider,
+  type RunRecord,
   type StudyMode,
 } from "./storage";
 import { prewarmRunner, runExercise, type RunResult, type TerminalLine } from "./wasmRunner";
@@ -132,8 +133,19 @@ function ExerciseRow({
   );
 }
 
-function TerminalView({ result, running, live }: { result?: RunResult; running: boolean; live: TerminalLine[] }) {
+function TerminalView({
+  record,
+  running,
+  live,
+  stale,
+}: {
+  record?: RunRecord;
+  running: boolean;
+  live: TerminalLine[];
+  stale: boolean;
+}) {
   const viewRef = useRef<HTMLDivElement>(null);
+  const result = record?.result;
   const lines = running && live.length ? live : result?.terminal ?? [];
 
   useEffect(() => {
@@ -152,6 +164,11 @@ function TerminalView({ result, running, live }: { result?: RunResult; running: 
 
   return (
     <div className="terminal-view" ref={viewRef}>
+      {stale && (
+        <p className="terminal-line terminal-line--system">
+          Bu terminal çıktısı kodun önceki haline ait. Güncel kod için tekrar derle.
+        </p>
+      )}
       {lines.map((entry, index) => (
         <pre className={`terminal-line terminal-line--${entry.stream}`} key={`${entry.stream}-${index}`}>{entry.text}</pre>
       ))}
@@ -190,9 +207,8 @@ export default function App() {
   const [state, setState] = useState<AppState>(() => loadState(exercises[0]));
   const [query, setQuery] = useState("");
   const [levelFilter, setLevelFilter] = useState<number | "all">("all");
-  const [runResult, setRunResult] = useState<RunResult>();
   const [liveTerminal, setLiveTerminal] = useState<TerminalLine[]>([]);
-  const [running, setRunning] = useState(false);
+  const [runningExerciseId, setRunningExerciseId] = useState<string | null>(null);
   const [reviewing, setReviewing] = useState(false);
   const [aiError, setAiError] = useState("");
   const [selectedReviewId, setSelectedReviewId] = useState<string | null>(null);
@@ -211,6 +227,11 @@ export default function App() {
   const testPlan = getTestPlan(activeExercise);
   const aiHistory = state.aiHistoryByExercise[activeExercise.id] ?? [];
   const selectedReview = aiHistory.find((entry) => entry.id === selectedReviewId) ?? aiHistory[0];
+  const runRecord = state.runRecordsByExercise[activeExercise.id];
+  const runResult = runRecord?.result;
+  const running = runningExerciseId !== null;
+  const activeExerciseRunning = runningExerciseId === activeExercise.id;
+  const runResultStale = Boolean(runRecord && runRecord.codeSnapshot !== code);
 
   useEffect(() => saveState(state), [state]);
 
@@ -290,8 +311,7 @@ export default function App() {
 
   const selectExercise = (exercise: Exercise) => {
     updateState((current) => ({ ...current, activeExerciseId: exercise.id }));
-    setRunResult(undefined);
-    setLiveTerminal([]);
+    if (runningExerciseId !== exercise.id) setLiveTerminal([]);
     setAiError("");
     setSelectedReviewId(null);
   };
@@ -341,8 +361,7 @@ export default function App() {
       examSession: session,
       activeExerciseId: session.exerciseIds[0] ?? current.activeExerciseId,
     }));
-    setRunResult(undefined);
-    setLiveTerminal([]);
+    if (runningExerciseId !== session.exerciseIds[0]) setLiveTerminal([]);
     setAiError("");
     setSelectedReviewId(null);
   };
@@ -360,41 +379,66 @@ export default function App() {
         completedIds: Array.from(new Set([...current.examSession.completedIds, activeExercise.id])),
       },
     }));
-    setRunResult(undefined);
-    setLiveTerminal([]);
+    if (runningExerciseId !== nextId) setLiveTerminal([]);
     setAiError("");
     setSelectedReviewId(null);
   };
 
   const runTests = async () => {
-    setRunning(true);
+    const exercise = activeExercise;
+    const source = code;
+    setRunningExerciseId(exercise.id);
     setLiveTerminal([]);
     try {
-      const result = await runExercise(activeExercise, code, (entry) =>
+      const result = await runExercise(exercise, source, (entry) =>
         setLiveTerminal((current) => [...current, entry]),
       );
-      setRunResult(result);
       const totalTests = result.outcomes.length || 1;
       const passedTests = result.outcomes.length ? result.outcomes.filter((outcome) => outcome.passed).length : Number(result.ok);
       updateState((current) => ({
         ...current,
+        runRecordsByExercise: {
+          ...current.runRecordsByExercise,
+          [exercise.id]: {
+            id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            createdAt: new Date().toISOString(),
+            codeSnapshot: source,
+            result,
+          },
+        },
         progressByExercise: {
           ...current.progressByExercise,
-          [activeExercise.id]: updateProgress(current.progressByExercise[activeExercise.id], passedTests, totalTests),
+          [exercise.id]: updateProgress(current.progressByExercise[exercise.id], passedTests, totalTests),
         },
       }));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      setRunResult({
+      const result: RunResult = {
         ok: false,
         compileStdout: "",
         compileStderr: message,
         mode: "compile-only",
         outcomes: [],
         terminal: [{ stream: "error", text: message }],
-      });
+      };
+      updateState((current) => ({
+        ...current,
+        runRecordsByExercise: {
+          ...current.runRecordsByExercise,
+          [exercise.id]: {
+            id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            createdAt: new Date().toISOString(),
+            codeSnapshot: source,
+            result,
+          },
+        },
+        progressByExercise: {
+          ...current.progressByExercise,
+          [exercise.id]: updateProgress(current.progressByExercise[exercise.id], 0, 1),
+        },
+      }));
     } finally {
-      setRunning(false);
+      setRunningExerciseId((current) => (current === exercise.id ? null : current));
     }
   };
 
@@ -418,6 +462,12 @@ export default function App() {
         model: state.models[state.provider],
         review,
         status: activeProgress?.status,
+        exerciseName: activeExercise.name,
+        codeSnapshot: code,
+        notesSnapshot: notes,
+        runSummary: runResult
+          ? `${runResult.ok ? "OK" : "KO"} · ${runResult.outcomes.filter((outcome) => outcome.passed).length}/${runResult.outcomes.length || 1}`
+          : "Derleme/test calistirilmadi",
       };
       updateState((current) => ({
         ...current,
@@ -445,10 +495,14 @@ export default function App() {
     setSelectedReviewId((current) => (current === id ? null : current));
   };
 
+  const restoreReviewCode = (entry: AiReviewEntry) => {
+    if (!entry.codeSnapshot) return;
+    const shouldRestore = window.confirm("Bu analiz alınırkenki kod mevcut editöre geri yüklensin mi?");
+    if (shouldRestore) setCode(entry.codeSnapshot);
+  };
+
   const resetExercise = () => {
     setCode(getStarterCode(activeExercise));
-    setRunResult(undefined);
-    setLiveTerminal([]);
     setAiError("");
   };
 
@@ -571,7 +625,7 @@ export default function App() {
               </div>
               <span className={`result-pill result-pill--${runResult?.ok ? "ok" : activeProgress?.status ?? "new"}`}>{statusLabel(activeProgress?.status)}</span>
             </div>
-            <TerminalView result={runResult} running={running} live={liveTerminal} />
+            <TerminalView record={runRecord} running={activeExerciseRunning} live={liveTerminal} stale={runResultStale} />
             <OutcomeList result={runResult} />
           </div>
         </section>
@@ -617,6 +671,12 @@ export default function App() {
               <div className="review-meta">
                 <span>{new Date(selectedReview.createdAt).toLocaleString("tr-TR")}</span>
                 <span>{selectedReview.provider} · {selectedReview.model}</span>
+                {selectedReview.runSummary && <span>{selectedReview.runSummary}</span>}
+                {selectedReview.codeSnapshot && (
+                  <button type="button" onClick={() => restoreReviewCode(selectedReview)}>
+                    Kodu geri yükle
+                  </button>
+                )}
               </div>
             )}
             <div className="review-output">
