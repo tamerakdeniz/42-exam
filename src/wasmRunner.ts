@@ -31,7 +31,7 @@ type WasmerApp = Awaited<ReturnType<WasmerSdk["Wasmer"]["fromFile"]>>;
 type WasmerCommand = NonNullable<WasmerApp["entrypoint"]>;
 
 const COMPILE_TIMEOUT_MS = 90_000;
-const EXECUTE_TIMEOUT_MS = 60_000;
+const EXECUTE_TIMEOUT_MS = 15_000;
 
 let sdkPromise: Promise<SdkBundle> | undefined;
 let clangPromise: Promise<unknown> | undefined;
@@ -213,6 +213,7 @@ export async function runExercise(
       emit(line(passed ? "ok" : "error", passed ? `${testCase.name}: OK` : `${testCase.name}: KO`));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      const timedOut = message.includes("zaman asimina ugradi");
       outcomes.push({
         name: testCase.name,
         passed: false,
@@ -222,6 +223,10 @@ export async function runExercise(
         exitCode: -1,
       });
       emit(line("error", `${testCase.name}: ${message}`));
+      if (timedOut) {
+        emit(line("system", "Timeout sonrasi kalan case'ler atlandi; ayni Wasmer instance'i guvenli sekilde durdurulamiyor."));
+        break;
+      }
     }
   }
 
