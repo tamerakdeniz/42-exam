@@ -32,6 +32,9 @@ const COMPILE_TIMEOUT_MS = 90_000;
 const EXECUTE_TIMEOUT_MS = 5_000;
 const MAX_CODE_BYTES = 200_000;
 const MAX_OUTPUT_CHARS = 32_000;
+const SANDBOX_TIMEOUT_MS = 120_000;
+const SANDBOX_BASE_NAME = "42-exam-c-compiler-v1";
+const SANDBOX_BASE_SNAPSHOT_EXPIRATION_MS = 7 * 24 * 60 * 60 * 1000;
 
 function line(stream: TerminalLine["stream"], text: string): TerminalLine {
   return { stream, text };
@@ -45,6 +48,32 @@ function trimOutput(output: string): string {
 function recordOutput(emit: (entry: TerminalLine) => void, prefix: string, stdout: string, stderr: string) {
   if (stdout) emit(line("stdout", `${prefix} stdout:\n${trimOutput(stdout)}`));
   if (stderr) emit(line("stderr", `${prefix} stderr:\n${trimOutput(stderr)}`));
+}
+
+function runnerFailureResult(
+  exercise: Exercise,
+  message: string,
+  runner: NonNullable<RunResult["runner"]>,
+): RunResult {
+  const plan = getTestPlan(exercise);
+  return {
+    ok: false,
+    compileStdout: "",
+    compileStderr: message,
+    outcomes: [],
+    terminal: [
+      line("error", "Backend runner calisamadi."),
+      line("stderr", message),
+      line(
+        "system",
+        runner === "backend-sandbox"
+          ? "Vercel Sandbox/OIDC veya compiler image ayarini kontrol et. Bu hata HTTP 500 yerine terminal gecmisine kaydedildi."
+          : "Native backend runner calisamadi. Local ortamda cc/gcc kurulumunu kontrol et.",
+      ),
+    ],
+    mode: plan.mode,
+    runner,
+  };
 }
 
 async function parseJsonBody(req: RequestLike): Promise<unknown> {
@@ -201,13 +230,7 @@ async function runSandboxExercise(exercise: Exercise, code: string): Promise<Run
   const { Sandbox } = await import("@vercel/sandbox");
   const terminal: TerminalLine[] = [];
   const emit = (entry: TerminalLine) => terminal.push(entry);
-  const image = process.env.VERCEL_SANDBOX_IMAGE;
-  const sandbox = await Sandbox.create({
-    ...(image ? { image } : { runtime: "node24" }),
-    persistent: false,
-    timeout: 120_000,
-    resources: { vcpus: 1 },
-  });
+  const sandbox = await createSandboxForRun(Sandbox, emit);
 
   try {
     const plan = getTestPlan(exercise);
@@ -262,8 +285,81 @@ async function runSandboxExercise(exercise: Exercise, code: string): Promise<Run
   }
 }
 
+async function createSandboxForRun(
+  Sandbox: typeof import("@vercel/sandbox").Sandbox,
+  emit: (entry: TerminalLine) => void,
+) {
+  const image = process.env.VERCEL_SANDBOX_IMAGE;
+  const common = {
+    timeout: SANDBOX_TIMEOUT_MS,
+    resources: { vcpus: 1 },
+  };
+
+  if (image) {
+    const sandbox = await Sandbox.create({
+      image,
+      persistent: false,
+      ...common,
+    });
+    await ensureSandboxCompiler(sandbox, emit);
+    return sandbox;
+  }
+
+  if (process.env.RUNNER_DISABLE_SANDBOX_BASE === "1") {
+    const sandbox = await Sandbox.create({
+      runtime: "node24",
+      persistent: false,
+      ...common,
+    });
+    await ensureSandboxCompiler(sandbox, emit);
+    return sandbox;
+  }
+
+  const baseName = process.env.VERCEL_SANDBOX_BASE_NAME || SANDBOX_BASE_NAME;
+  emit(line("system", `Sandbox compiler base hazirlaniyor: ${baseName}`));
+
+  const base = await Sandbox.getOrCreate({
+    name: baseName,
+    runtime: "node24",
+    persistent: true,
+    snapshotExpiration: SANDBOX_BASE_SNAPSHOT_EXPIRATION_MS,
+    keepLastSnapshots: {
+      count: 1,
+      expiration: SANDBOX_BASE_SNAPSHOT_EXPIRATION_MS,
+      deleteEvicted: true,
+    },
+    ...common,
+    onCreate: async (sandbox) => {
+      await ensureSandboxCompiler(sandbox, emit);
+    },
+  });
+
+  await ensureSandboxCompiler(base, emit);
+  await base.stop();
+  emit(line("system", "Sandbox compiler base snapshot hazir; izole test sandbox'i fork ediliyor."));
+
+  try {
+    const sandbox = await Sandbox.fork({
+      sourceSandbox: baseName,
+      persistent: false,
+      ...common,
+    });
+    await ensureSandboxCompiler(sandbox, emit);
+    return sandbox;
+  } catch (error) {
+    emit(line("stderr", `Sandbox fork basarisiz; temiz sandbox'a geciliyor: ${error instanceof Error ? error.message : String(error)}`));
+    const sandbox = await Sandbox.create({
+      runtime: "node24",
+      persistent: false,
+      ...common,
+    });
+    await ensureSandboxCompiler(sandbox, emit);
+    return sandbox;
+  }
+}
+
 async function ensureSandboxCompiler(
-  sandbox: Awaited<ReturnType<typeof import("@vercel/sandbox").Sandbox.create>>,
+  sandbox: InstanceType<typeof import("@vercel/sandbox").Sandbox>,
   emit: (entry: TerminalLine) => void,
 ) {
   const check = await sandbox.runCommand("bash", ["-lc", "command -v cc >/dev/null 2>&1"], { timeoutMs: 5_000 });
@@ -275,7 +371,7 @@ async function ensureSandboxCompiler(
 }
 
 async function runProgramCasesSandbox(
-  sandbox: Awaited<ReturnType<typeof import("@vercel/sandbox").Sandbox.create>>,
+  sandbox: InstanceType<typeof import("@vercel/sandbox").Sandbox>,
   cwd: string,
   cases: ProgramCase[],
   emit: (entry: TerminalLine) => void,
@@ -321,13 +417,23 @@ export default async function handler(req: RequestLike, res: ResponseLike) {
     return;
   }
 
+  let requested: { exercise: Exercise; code: string };
   try {
-    const { exercise, code } = getRequestedExercise(await parseJsonBody(req));
-    const result = process.env.VERCEL === "1" && process.env.RUNNER_FORCE_NATIVE !== "1"
-      ? await runSandboxExercise(exercise, code)
-      : await runLocalExercise(exercise, code);
+    requested = getRequestedExercise(await parseJsonBody(req));
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+    return;
+  }
+
+  const useSandbox = process.env.VERCEL === "1" && process.env.RUNNER_FORCE_NATIVE !== "1";
+  try {
+    const result = useSandbox
+      ? await runSandboxExercise(requested.exercise, requested.code)
+      : await runLocalExercise(requested.exercise, requested.code);
     res.status(200).json(result);
   } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    const message = error instanceof Error ? error.stack ?? error.message : String(error);
+    console.error("[api/run] runner failed", message);
+    res.status(200).json(runnerFailureResult(requested.exercise, message, useSandbox ? "backend-sandbox" : "backend-native"));
   }
 }

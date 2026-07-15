@@ -13,6 +13,34 @@ function isRunResult(value: unknown): value is RunResult {
   return Boolean(result && typeof result.ok === "boolean" && Array.isArray(result.terminal) && Array.isArray(result.outcomes));
 }
 
+async function readResponseBody(response: Response): Promise<unknown> {
+  const text = await response.text();
+  if (!text) return undefined;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
+function extractErrorMessage(data: unknown, status: number): string {
+  if (typeof data === "string") {
+    const compact = data.replace(/\s+/g, " ").trim();
+    return compact ? `Backend runner HTTP ${status}: ${compact.slice(0, 500)}` : `Backend runner HTTP ${status}`;
+  }
+
+  const payload = data as { error?: unknown; message?: unknown };
+  if (typeof payload?.error === "string") return payload.error;
+  if (payload?.error && typeof payload.error === "object") {
+    const nested = payload.error as { message?: unknown; code?: unknown };
+    if (typeof nested.message === "string") {
+      return typeof nested.code === "string" ? `${nested.message} (${nested.code})` : nested.message;
+    }
+  }
+  if (typeof payload?.message === "string") return payload.message;
+  return `Backend runner HTTP ${status}`;
+}
+
 export async function runExercise(
   exercise: Exercise,
   code: string,
@@ -25,10 +53,9 @@ export async function runExercise(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ exerciseId: exercise.id, code }),
     });
-    const data = await response.json().catch(() => undefined);
+    const data = await readResponseBody(response);
     if (!response.ok) {
-      const message = (data as { error?: string } | undefined)?.error ?? `Backend runner HTTP ${response.status}`;
-      throw new Error(message);
+      throw new Error(extractErrorMessage(data, response.status));
     }
     if (!isRunResult(data)) throw new Error("Backend runner gecersiz yanit dondu.");
     for (const entry of data.terminal) onLine?.(entry);

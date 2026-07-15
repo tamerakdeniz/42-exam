@@ -35,13 +35,30 @@ Vercel proje kökü olarak bu klasörü seç. `vercel.json`, Wasmer için gereke
 `Cross-Origin-Opener-Policy` ve `Cross-Origin-Embedder-Policy` headerlarını ekler.
 
 Production'da `/api/run`, Vercel Sandbox içinde öğrenci kodunu izole şekilde
-derleyip çalıştırır. En hızlı yapı için Vercel Container Registry'de `cc/gcc`
-hazır bir Sandbox image kullanıp project env'e şu değeri ekle:
+derleyip çalıştırır. Vercel Sandbox SDK production'da Vercel OIDC ile otomatik
+kimlik doğrular; lokalde Sandbox yolunu test edeceksen proje linklenmiş olmalı:
+
+```bash
+npx vercel link
+npx vercel env pull
+```
+
+Varsayılan production yolu, `gcc` kurulu kalacak persistent bir compiler base
+sandbox hazırlar ve her test için bu base snapshot'tan izole fork açar. Base adı
+gerektiğinde şu env ile değiştirilebilir:
+
+```bash
+VERCEL_SANDBOX_BASE_NAME=42-exam-c-compiler-v1
+```
+
+En hızlı ve en stabil yapı için Vercel Container Registry'de `cc/gcc` hazır bir
+Sandbox image kullanıp project env'e şu değeri ekle:
 
 ```bash
 VERCEL_SANDBOX_IMAGE=<image-adı>
 ```
 
-Bu env yoksa runner Sandbox içinde `gcc` kurmayı dener; ilk çalışma daha yavaş
-olabilir. AI API key'leri backend'e gönderilmez, kullanıcı tarayıcısındaki
-`localStorage` içinde kalır.
+Bu env yoksa runner compiler base içinde `gcc` kurmayı dener; ilk çalışma daha
+yavaş olabilir, sonraki çalışmalar snapshot/fork ile daha hızlıdır. AI API
+key'leri backend'e gönderilmez, kullanıcı tarayıcısındaki `localStorage` içinde
+kalır.
