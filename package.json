@@ -10,6 +10,7 @@
     "typecheck": "tsc -b --pretty false"
   },
   "dependencies": {
+    "@vercel/sandbox": "^2.6.1",
     "@vitejs/plugin-react": "6.0.2",
     "@wasmer/sdk": "^0.10.0",
     "lucide-react": "1.21.0",
@@ -18,6 +19,7 @@
     "vite": "8.0.16"
   },
   "devDependencies": {
+    "@types/node": "^26.1.1",
     "@types/react": "19.2.17",
     "@types/react-dom": "19.2.3",
     "typescript": "6.0.3"

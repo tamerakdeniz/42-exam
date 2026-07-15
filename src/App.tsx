@@ -24,6 +24,9 @@ import { fallbackModels, fetchModels, requestAiReview } from "./aiReview";
 import { CodeEditor } from "./CodeEditor";
 import { Markdown } from "./Markdown";
 import { exercises, levelLabels, sourceReferences, type Exercise } from "./exerciseCatalog";
+import type { RunResult, TerminalLine } from "./runTypes";
+import { prewarmRunner, runExercise } from "./runExercise";
+import { getExerciseGuide, isSimplePractice } from "./solutionGuide";
 import { getStarterCode, getTestPlan } from "./testPlans";
 import {
   loadState,
@@ -37,7 +40,6 @@ import {
   type RunRecord,
   type StudyMode,
 } from "./storage";
-import { prewarmRunner, runExercise, type RunResult, type TerminalLine } from "./wasmRunner";
 
 const exerciseById = new Map(exercises.map((exercise) => [exercise.id, exercise]));
 const modeLabels: Record<StudyMode, string> = {
@@ -203,15 +205,57 @@ function OutcomeList({ result }: { result?: RunResult }) {
   );
 }
 
+function GuideModal({ exercise, onClose }: { exercise: Exercise; onClose: () => void }) {
+  const guide = getExerciseGuide(exercise);
+
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section className="guide-modal" role="dialog" aria-modal="true" aria-labelledby="guide-title">
+        <header className="guide-modal__header">
+          <div>
+            <span className="eyebrow">{exercise.name} · {guide.difficulty}</span>
+            <h2 id="guide-title">{guide.title}</h2>
+          </div>
+          <button className="icon-button" onClick={onClose} aria-label="Kapat" title="Kapat">
+            <XCircle size={18} />
+          </button>
+        </header>
+        <div className="guide-modal__body">
+          <div className="review-output">
+            <Markdown text={guide.bestPractice} />
+          </div>
+          {guide.solution ? (
+            <div className="solution-block">
+              <div className="solution-block__header">
+                <span className="eyebrow">Referans çözüm</span>
+              </div>
+              <pre><code>{guide.solution}</code></pre>
+            </div>
+          ) : (
+            <p className="muted-copy">Bu soru için gömülü referans çözüm yok. Aşağıdaki kaynaklarda aynı subject için farklı çözüm yaklaşımlarını karşılaştır.</p>
+          )}
+          <div className="guide-links">
+            {guide.sourceLinks.map((source) => (
+              <a href={source.url} target="_blank" rel="noreferrer" key={source.url}>{source.label}<ChevronRight size={14} /></a>
+            ))}
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 export default function App() {
   const [state, setState] = useState<AppState>(() => loadState(exercises[0]));
   const [query, setQuery] = useState("");
   const [levelFilter, setLevelFilter] = useState<number | "all">("all");
+  const [simpleOnly, setSimpleOnly] = useState(false);
   const [liveTerminal, setLiveTerminal] = useState<TerminalLine[]>([]);
   const [runningExerciseId, setRunningExerciseId] = useState<string | null>(null);
   const [reviewing, setReviewing] = useState(false);
   const [aiError, setAiError] = useState("");
   const [selectedReviewId, setSelectedReviewId] = useState<string | null>(null);
+  const [guideOpen, setGuideOpen] = useState(false);
   const [availableModels, setAvailableModels] = useState<Record<Provider, string[]>>(fallbackModels);
   const [tick, setTick] = useState(0);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("sidebar-collapsed") === "1");
@@ -290,13 +334,14 @@ export default function App() {
     const normalized = query.trim().toLowerCase();
     return exercises.filter((exercise) => {
       const levelMatches = levelFilter === "all" || exercise.level === levelFilter;
+      const simpleMatches = !simpleOnly || isSimplePractice(exercise);
       const queryMatches = !normalized
         || exercise.name.toLowerCase().includes(normalized)
         || exercise.subject.toLowerCase().includes(normalized)
         || exercise.tags.some((tag) => tag.includes(normalized));
-      return levelMatches && queryMatches;
+      return levelMatches && simpleMatches && queryMatches;
     });
-  }, [levelFilter, query]);
+  }, [levelFilter, query, simpleOnly]);
 
   const stats = useMemo(() => {
     const progress = Object.values(state.progressByExercise);
@@ -551,6 +596,7 @@ export default function App() {
             {[0, 1, 2, 3, 4, 5].map((level) => (
               <button className={levelFilter === level ? "active" : ""} onClick={() => setLevelFilter(level)} key={level}>L{level}</button>
             ))}
+            <button className={simpleOnly ? "active" : ""} onClick={() => setSimpleOnly((value) => !value)}>Simple</button>
           </div>
         </div>
 
@@ -598,6 +644,8 @@ export default function App() {
             <div><FileText size={16} /><span>Expected</span><b>{activeExercise.expectedFiles}</b></div>
             <div><Code2 size={16} /><span>Allowed</span><b>{activeExercise.allowedFunctions}</b></div>
             <div><FlaskConical size={16} /><span>Test</span><b>{testPlan.mode === "compile-only" ? "compile only" : `${testPlan.mode} / ${testPlan.mode === "program" ? testPlan.cases?.length ?? 0 : 1}`}</b></div>
+            {isSimplePractice(activeExercise) && <div><CheckCircle2 size={16} /><span>Practice</span><b>simple write</b></div>}
+            <button className="link-button" onClick={() => setGuideOpen(true)}><BookOpen size={15} /> Best practice / doğru yanıt</button>
             <a href={activeExercise.sourceUrl} target="_blank" rel="noreferrer">Kaynak subject</a>
           </aside>
         </section>
@@ -740,6 +788,7 @@ export default function App() {
           </div>
         </section>
       </main>
+      {guideOpen && <GuideModal exercise={activeExercise} onClose={() => setGuideOpen(false)} />}
     </div>
   );
 }

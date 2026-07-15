@@ -1,5 +1,5 @@
 import type { Exercise } from "./exerciseCatalog";
-import type { RunResult } from "./wasmRunner";
+import type { RunResult } from "./runTypes";
 
 export type StudyMode = "practice" | "random" | "exam";
 export type Provider = "gemini" | "claude";

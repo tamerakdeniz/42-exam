@@ -1,28 +1,6 @@
 import type { Exercise } from "./exerciseCatalog";
 import { getTestPlan, type ProgramCase } from "./testPlans";
-
-export type TerminalLine = {
-  stream: "system" | "stdout" | "stderr" | "ok" | "error";
-  text: string;
-};
-
-export type TestOutcome = {
-  name: string;
-  passed: boolean;
-  expected?: string;
-  stdout: string;
-  stderr: string;
-  exitCode: number;
-};
-
-export type RunResult = {
-  ok: boolean;
-  compileStdout: string;
-  compileStderr: string;
-  outcomes: TestOutcome[];
-  terminal: TerminalLine[];
-  mode: "program" | "function" | "compile-only";
-};
+import type { RunResult, TerminalLine, TestOutcome } from "./runTypes";
 
 type WasmerSdk = typeof import("@wasmer/sdk");
 type WasmerRuntime = InstanceType<WasmerSdk["Runtime"]>;
@@ -169,6 +147,7 @@ export async function runExercise(
       outcomes: [],
       terminal,
       mode: plan.mode,
+      runner: "browser-wasmer",
     };
   }
 
@@ -181,6 +160,7 @@ export async function runExercise(
       outcomes: [],
       terminal,
       mode: plan.mode,
+      runner: "browser-wasmer",
     };
   }
 
@@ -238,5 +218,6 @@ export async function runExercise(
     outcomes,
     terminal,
     mode: plan.mode,
+    runner: "browser-wasmer",
   };
 }

@@ -1,6 +1,12 @@
 {
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
+  "functions": {
+    "api/run.ts": {
+      "maxDuration": 300,
+      "memory": 1024
+    }
+  },
   "headers": [
     {
       "source": "/(.*)",

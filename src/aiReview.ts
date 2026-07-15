@@ -1,6 +1,6 @@
 import type { Exercise } from "./exerciseCatalog";
+import type { RunResult } from "./runTypes";
 import type { Provider } from "./storage";
-import type { RunResult } from "./wasmRunner";
 
 // Aktif olarak kullanilabilen, maliyeti dusuk / yaygin kullanilan modeller.
 // API anahtari verildiginde saglayici uzerinden guncel liste cekilir; asagidaki
