@@ -3,10 +3,10 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Exercise } from "../src/exerciseCatalog";
-import { exercises } from "../src/exerciseCatalog";
-import type { RunResult, TerminalLine, TestOutcome } from "../src/runTypes";
-import { getTestPlan, type ProgramCase } from "../src/testPlans";
+import type { Exercise } from "../src/exerciseCatalog.js";
+import { exercises } from "../src/exerciseCatalog.js";
+import type { RunResult, TerminalLine, TestOutcome } from "../src/runTypes.js";
+import { getTestPlan, type ProgramCase } from "../src/testPlans.js";
 
 type RequestLike = {
   method?: string;
